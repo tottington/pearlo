@@ -30,6 +30,7 @@ import {
 import { PearloEngine } from "./engine";
 import { predictedPlayerAirByEffect } from "./familiar";
 import { luckySourceReport } from "./fishy";
+import { castSharedResBuffs, uncastResBuffBonus } from "./mood";
 import {
   allOrganEquipment,
   canFixOvercap,
@@ -38,8 +39,9 @@ import {
   setLiverMode,
   wineglassMode,
 } from "./organs";
+import { pearlAvoidTerms, pearlOutfitWeights } from "./outfit";
 import { pearlTasks } from "./pearls";
-import { PEARL_RES_CAP, canBreathUnderwater } from "./zones";
+import { PEARL_RES_CAP, PEARL_RES_HEADROOM, canBreathUnderwater } from "./zones";
 
 export function main(command?: string): void {
   sinceKolmafiaRevision(28100);
@@ -67,7 +69,23 @@ export function main(command?: string): void {
   // Liver mode is chosen once — organ state doesn't change mid-run (pearlo neither
   // eats nor drinks). The drunk flag is a what-if override for sim/profit reporting
   // only — it must never leak into a real (turn-spending) run.
-  if (args.drunk && (args.sim || args.profit)) setLiverMode("wineglass");
+  const reportOnly = args.sim || args.profit;
+  if (!reportOnly) {
+    // Abort before the buff pass spends anything on a day that cannot farm at all.
+    if (!canFixOvercap()) {
+      abort(
+        "pearlo: stomach or spleen is overcapped beyond what owned extenders can fix — " +
+          "adventuring is impossible (Food Coma / jaundiced). Use a mojo filter or organ " +
+          "cleaners, or wait for rollover.",
+      );
+    }
+    // Before anything is priced: the profit model speculates maximizes, and those only
+    // reflect resistance that is actually up, so casting the shared buffs first is what
+    // makes the estimate match the outfit the run will really dress. Report-only
+    // invocations spend nothing, so they price against whatever is already running.
+    castSharedResBuffs(selected);
+  }
+  if (args.drunk && reportOnly) setLiverMode("wineglass");
   else chooseLiverConfiguration(selected);
 
   if (args.profit) {
@@ -99,10 +117,17 @@ export function main(command?: string): void {
     primeZoneVerdicts(selected);
     for (const spec of selected) {
       const v = zoneVerdict(spec);
+      const obtained = get(spec.obtained) ? " (already obtained today — will not farm)" : "";
       print(
-        `  ${spec.key}: res ${v.res} → ${v.ratePct}%/fight — expected profit ${Math.round(v.profit)} meat — ${v.go ? "GO" : "SKIP"}`,
+        `  ${spec.key}: res ${v.res}${v.potionCost > 0 ? ` (incl. ${Math.round(v.potionCost)} meat of potions)` : ""} → ${v.ratePct.toFixed(1)}%/fight — expected profit ${Math.round(v.profit)} meat — ${v.go ? "GO" : "SKIP"}${obtained}`,
         v.go ? "blue" : "red",
       );
+      const uncast = uncastResBuffBonus(spec);
+      if (uncast > 0) {
+        print(
+          `   note: +${uncast} res of castable free buffs is not active — a real run casts them before pricing, so this estimate is conservative.`,
+        );
+      }
       for (const line of overrideReportLines(spec)) print(line);
     }
     if (!canFixOvercap()) {
@@ -157,11 +182,13 @@ export function main(command?: string): void {
           ? `, +equip ${args.major.drunkweapon}`
           : "";
       const weaponForced = totemForced || drunkweapon.length > 0;
-      const combatWeights = simDrunk
-        ? `${weaponForced ? "" : ", effective"}, 0.2 weapon damage, 0.2 weapon damage percent`
-        : "";
       const organEquips = organEquip.map((i) => `, +equip ${i}`).join("");
-      const expr = `${p.key} res ${PEARL_RES_CAP} max${breathing}${wineglass}${drunkweapon}${organEquips}${combatWeights}`;
+      // The same weights and refusals buildPearlOutfit and the profit model use, so the
+      // outfit this prints is the one the run would actually dress.
+      const expr =
+        `${p.key} res ${PEARL_RES_CAP + PEARL_RES_HEADROOM} max${breathing}${wineglass}` +
+        `${drunkweapon}${organEquips}${pearlOutfitWeights(simDrunk, weaponForced)}` +
+        `${pearlAvoidTerms(p)}`;
       const overrideNote = outfitOverride(p.key) !== undefined ? " (ignores zone overrides)" : "";
       print(
         `  recommended equips (as the run would dress)${wineglass ? " (wineglass in off-hand)" : ""}:${overrideNote}`,
@@ -174,15 +201,9 @@ export function main(command?: string): void {
     return;
   }
 
-  if (!canFixOvercap()) {
-    abort(
-      "pearlo: stomach or spleen is overcapped beyond what owned extenders can fix — " +
-        "adventuring is impossible (Food Coma / jaundiced). Use a mojo filter or organ " +
-        "cleaners, or wait for rollover.",
-    );
-  }
   primeZoneVerdicts(selected);
-  for (const spec of selected) {
+  const remaining = selected.filter((spec) => !get(spec.obtained));
+  for (const spec of remaining) {
     const verdict = zoneVerdict(spec);
     if (!verdict.go && !args.major.force) {
       print(
@@ -191,9 +212,13 @@ export function main(command?: string): void {
       );
     }
   }
-  if (!args.major.force && selected.every((s) => !zoneVerdict(s).go)) {
+  // All-obtained days fall through: the engine still runs the non-farming tasks
+  // (codpiece socketing) and every zone task is already completed().
+  if (remaining.length === 0) {
+    print("pearlo: every selected pearl is already obtained today — nothing to farm.", "blue");
+  } else if (!args.major.force && remaining.every((s) => !zoneVerdict(s).go)) {
     print(
-      "pearlo: every selected zone fails the profit gate — nothing to farm (use force to override).",
+      "pearlo: every remaining zone fails the profit gate — nothing to farm (use force to override).",
       "red",
     );
     return;

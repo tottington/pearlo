@@ -12,6 +12,7 @@ import {
   getFuel,
   haveEquipped,
   holiday,
+  Item,
   hpCost,
   inebrietyLimit,
   mpCost,
@@ -87,6 +88,33 @@ export function fuelUp(): void {
   create(23, $item`loaf of soda bread`);
   cliExecute(`asdonmartin fuel ${availableAmount($item`loaf of soda bread`)} soda bread`);
 }
+// Auto-restorers a pearlo restore must never burn — free rests are for closers.
+const BANNED_AUTO_RESTORERS = [
+  "sleep on your clan sofa",
+  "rest in your campaway tent",
+  "rest at the chateau",
+  "rest at your campground",
+  "free rest",
+];
+
+/**
+ * hp/mp auto-recovery item lists with the banned restorers stripped (and the tonic
+ * guaranteed on the MP side). The engine installs these for the whole run; pre-engine
+ * restores wrap themselves in the same lists via withProperties.
+ */
+export function restorerItemSettings(): {
+  hpAutoRecoveryItems: string;
+  mpAutoRecoveryItems: string;
+} {
+  const strip = (s: string) => s.split(";").filter((x) => !BANNED_AUTO_RESTORERS.includes(x));
+  return {
+    hpAutoRecoveryItems: strip(get("hpAutoRecoveryItems")).join(";"),
+    mpAutoRecoveryItems: Array.from(
+      new Set([...strip(get("mpAutoRecoveryItems")), "doc galaktik's invigorating tonic"]),
+    ).join(";"),
+  };
+}
+
 const improvedShowerSkills = new Map([
   [$effect`Slippery as a Seal`, $skill`Seal Clubbing Frenzy`],
   [$effect`Strength of the Tortoise`, $skill`Patience of the Tortoise`],
@@ -98,6 +126,16 @@ const improvedShowerSkills = new Map([
   [$effect`Disco over Matter`, $skill`Disco Aerobics`],
   [$effect`Mariachi Moisture`, $skill`Moxie of the Mariachi`],
 ]);
+// Casts whose "cast N Skill ^ Effect" default only yields the effect with this item
+// equipped. mafia equips it itself but would mall-buy a missing one, so canAcquireEffect
+// gates on ownership; tryAcquiringEffect's shower-shield handler does its own swap.
+const castImplements = new Map<Effect, Item>([
+  ...[...improvedShowerSkills.keys()].map(
+    (ef) => [ef, $item`April Shower Thoughts shield`] as [Effect, Item],
+  ),
+  [$effect`Scariersauce`, $item`velour viscometer`],
+]);
+
 export const forbiddenEffects: Effect[] = [];
 
 export function canAcquireEffect(ef: Effect): boolean {
@@ -120,8 +158,11 @@ export function canAcquireEffect(ef: Effect): boolean {
         case "cast": {
           // We have the skill and can afford it — some skills (Blood Bubble,
           // Blood Bond) cost HP rather than MP; never cast into unconsciousness.
-          const sk = toSkill(target);
-          return have(sk) && myMp() >= mpCost(sk) && myHp() > hpCost(sk);
+          // "cast N Skill ^ Effect" defaults name the granted effect after a caret.
+          const sk = toSkill(target.split(" ^ ")[0]);
+          if (!have(sk) || myMp() < mpCost(sk) || myHp() <= hpCost(sk)) return false;
+          const implement = castImplements.get(ef);
+          return implement === undefined || have(implement);
         }
         case "cargo":
           return false; // Don't acquire effects with cargo (items are usually way more useful)

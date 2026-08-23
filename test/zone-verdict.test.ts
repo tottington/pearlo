@@ -1,0 +1,334 @@
+/**
+ * evaluateZone through its exported faces (zoneVerdict / primeZoneVerdicts): how a
+ * zone's verdict is priced, how the potion decision is made inside the cost model, and
+ * how the shared Fishy/potion/carried budget threads across zones. Encodes charter
+ * defects 1 (maximize boolean misread), 11 (carried stacks aged twice), 15 (gate
+ * sizing at 2 turns/fight), 16 (SKIP/obtained zones consuming the shared budget), and
+ * the design invariants (never worse than gear-only, one pricing function).
+ */
+import { describe, expect, it } from "vitest";
+
+import type { PearlSpec } from "../src/zones";
+
+import { Game, loadGame, standardScenario } from "./support/harness";
+
+function spec(g: Game, key: string): PearlSpec {
+  const found = g.zones.PEARLS.find((p) => p.key === key);
+  if (!found) throw new Error(`no ${key} spec`);
+  return found;
+}
+
+describe("speculative resistance reading (charter 1)", () => {
+  it("trusts the generated outfit's numbers even when maximize() returns false", async () => {
+    // maximize(str, true) returns false whenever nothing beats the CURRENT outfit —
+    // that is not infeasibility. 41 of 41 logged reads were misreported this way.
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 18, fishyTurns: 40 });
+      t.state.maximizeReturn = false;
+    });
+    const v = g.economics.zoneVerdict(spec(g, "cold"));
+    expect(v.res).toBe(18);
+    expect(v.ratePct).toBeCloseTo(10);
+    expect(v.go).toBe(true);
+  });
+
+  it("treats an unmet breathing requirement as unreachable even when maximize() returns true", async () => {
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 18, fishyTurns: 40 });
+      t.specRes(18, { "Adventure Underwater": false });
+      t.state.maximizeReturn = true;
+    });
+    const v = g.economics.zoneVerdict(spec(g, "cold"));
+    expect(v.res).toBe(0);
+    expect(v.ratePct).toBeCloseTo(1.7);
+  });
+});
+
+describe("potion stack sizing inside the verdict (charter 15, 6)", () => {
+  it("sizes the stack at the model's own turn count, not 2 turns per fight", async () => {
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 15, fishyTurns: 40 });
+      t.item("cold powder", {
+        mall: 200,
+        sale: 100,
+        effect: "Insulated",
+        duration: 20,
+        res: { cold: 3 },
+      });
+    });
+    g.args.resources.potionprice = 1000;
+    const v = g.economics.zoneVerdict(spec(g, "cold"));
+    // At res 18: 10 fights, all Fishy-covered → 10 turns + 2 slack = 12 → ONE 20-turn
+    // copy. The old 2-turns-per-fight gate wanted 22 turns → two copies — a 2x charge.
+    expect(v.res).toBe(18);
+    expect(v.potionPlan.use).toHaveLength(1);
+    expect(v.potionPlan.use[0].count).toBe(1);
+    expect(v.potionCost).toBe(200);
+    // Same-function invariant: the winning verdict is priced by exactly the arithmetic
+    // costZone uses — hand-computed: 50,000 − 10×1,000 − 200.
+    expect(v.fights).toBe(10);
+    expect(v.turns).toBe(10);
+    expect(v.profit).toBe(50_000 - 10_000 - 200);
+  });
+
+  it("never prices a zone worse than with no potions at all", async () => {
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 15, fishyTurns: 40 });
+      // The only potion is a big loser: crossing the step saves 2,000 meat of turns
+      // but costs 40,000.
+      t.item("cold powder", {
+        mall: 40_000,
+        sale: 30_000,
+        effect: "Insulated",
+        duration: 20,
+        res: { cold: 3 },
+      });
+    });
+    g.args.resources.potionprice = 50_000;
+    const v = g.economics.zoneVerdict(spec(g, "cold"));
+    expect(v.potionCost).toBe(0);
+    expect(v.potionPlan.use).toHaveLength(0);
+    expect(v.res).toBe(15);
+    expect(v.ratePct).toBeCloseTo(8.5);
+    // gear-only: 12 fights, Fishy-covered → 12 turns.
+    expect(v.profit).toBe(50_000 - 12_000);
+  });
+});
+
+describe("budget threading across zones (charter 16)", () => {
+  it("lets a profitable later zone keep the Fishy a SKIP zone would have burned", async () => {
+    const g = await loadGame((t) => {
+      standardScenario(t, { fishyTurns: 12 });
+      t.specRes({ spooky: 0, cold: 18 });
+    });
+    const spooky = spec(g, "spooky");
+    const cold = spec(g, "cold");
+    g.economics.primeZoneVerdicts([spooky, cold]);
+    const spookyVerdict = g.economics.zoneVerdict(spooky);
+    const coldVerdict = g.economics.zoneVerdict(cold);
+    // spooky at res 0: 59 fights, hopeless — priced SKIP, must not spend the pool.
+    expect(spookyVerdict.go).toBe(false);
+    expect(spookyVerdict.willFarm).toBe(false);
+    expect(coldVerdict.fishyUsed).toBe(10);
+    expect(coldVerdict.turns).toBe(10);
+    expect(coldVerdict.profit).toBe(50_000 - 10_000);
+  });
+
+  it("lets a later zone keep Fishy and potions a zone already won today would have reserved", async () => {
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 15, fishyTurns: 100 });
+      // One owned copy of an unpriceable all-element potion that sits in EVERY
+      // zone's default list (pec oil): whoever reserves it first gets the only
+      // usable copy. spooky's own verdict genuinely wants it (15 → 18 pays), so an
+      // obtained zone that wrongly committed its plan WOULD claim it.
+      t.item("pec oil", {
+        sale: 100,
+        count: 1,
+        effect: "Oiled-Up",
+        duration: 20,
+        res: { all: 3 },
+      });
+      t.prop("_unblemishedPearlAnemoneMine", true); // spooky pearl already obtained
+    });
+    const spooky = spec(g, "spooky");
+    const cold = spec(g, "cold");
+    g.economics.primeZoneVerdicts([spooky, cold]);
+    const spookyVerdict = g.economics.zoneVerdict(spooky);
+    const coldVerdict = g.economics.zoneVerdict(cold);
+    expect(spookyVerdict.willFarm).toBe(false);
+    // spooky's chosen plan wanted the copy — the reserve threat is real, and only
+    // willFarm=false keeps it off the ledger.
+    expect(spookyVerdict.potionPlan.use).toHaveLength(1);
+    // cold still sees the owned copy as its own: spent at sale value, not bought.
+    expect(coldVerdict.res).toBe(18);
+    expect(coldVerdict.potionCost).toBe(100);
+    expect(coldVerdict.profit).toBe(50_000 - 10_000 - 100);
+  });
+
+  it("charges each farmed zone's Fishy use to the zones after it — and only that", async () => {
+    const g = await loadGame((t) => {
+      standardScenario(t, { fishyTurns: 12 });
+      t.specRes({ spooky: 15, cold: 18 });
+      // spooky gets a potion candidate that is evaluated and REJECTED (it loses);
+      // evaluating it must not corrupt the budget the later zone is priced with.
+      t.item("spooky powder", {
+        mall: 40_000,
+        sale: 30_000,
+        effect: "Sheet-Faced",
+        duration: 20,
+        res: { spooky: 3 },
+      });
+    });
+    g.args.resources.potionprice = 50_000;
+    const spooky = spec(g, "spooky");
+    const cold = spec(g, "cold");
+    g.economics.primeZoneVerdicts([spooky, cold]);
+    const spookyVerdict = g.economics.zoneVerdict(spooky);
+    const coldVerdict = g.economics.zoneVerdict(cold);
+    // spooky at res 15: 12 fights, pool 12 → all covered, farmed.
+    expect(spookyVerdict.willFarm).toBe(true);
+    expect(spookyVerdict.fishyUsed).toBe(12);
+    expect(spookyVerdict.potionCost).toBe(0);
+    // cold gets exactly the remainder: nothing.
+    expect(coldVerdict.fishyUsed).toBe(0);
+    expect(coldVerdict.turns).toBe(20);
+  });
+});
+
+describe("carried potion effects (charter 11)", () => {
+  it("ages an earlier zone's stack by that zone's turns exactly once", async () => {
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 15, fishyTurns: 100 });
+      // 25-turn all-element stack: spooky farms 10 turns, leaving 15 — enough to
+      // cover cold's 12 gear-turns ONCE, but a double-aged 5 would not be.
+      t.item("spooky powder", {
+        mall: 100,
+        sale: 50,
+        effect: "Sheet-Faced",
+        duration: 25,
+        res: { all: 3 },
+      });
+    });
+    g.args.resources.potionprice = 1000;
+    const spooky = spec(g, "spooky");
+    const cold = spec(g, "cold");
+    g.economics.primeZoneVerdicts([spooky, cold]);
+    const spookyVerdict = g.economics.zoneVerdict(spooky);
+    const coldVerdict = g.economics.zoneVerdict(cold);
+    expect(spookyVerdict.res).toBe(18);
+    expect(spookyVerdict.potionCost).toBe(100);
+    // cold rides the carried stack: res 18 with NO potion spend of its own.
+    expect(coldVerdict.res).toBe(18);
+    expect(coldVerdict.ratePct).toBeCloseTo(10);
+    expect(coldVerdict.potionCost).toBe(0);
+    expect(coldVerdict.potionPlan.use).toHaveLength(0);
+  });
+
+  it("ages a stack through EVERY intervening zone before crediting a later one", async () => {
+    // Discriminates aging from not-aging (deleting the aging block entirely must
+    // flip this): the aged residual falls below the third zone's gearTurns while the
+    // unaged one would clear it.
+    //   spooky buys a 25-turn spooky+cold potion, farms 10 turns → 15 left.
+    //   hot (its effect grants no hot res, and the potion sits in no hot list) just
+    //     farms 10 turns through it → 5 left.
+    //   cold at 40% done needs 9 gear-turns: 5 < 9 → NO credit. Unaged 15 ≥ 9 would
+    //     wrongly price cold a tier high with no potion plan to sustain it.
+    const g = await loadGame((t) => {
+      standardScenario(t, { fishyTurns: 100 });
+      t.specRes({ spooky: 15, hot: 18, cold: 12 });
+      t.item("spooky powder", {
+        mall: 100,
+        sale: 50,
+        effect: "Sheet-Faced",
+        duration: 25,
+        res: { spooky: 3, cold: 3 },
+      });
+      t.prop("_unblemishedPearlTheBriniestDeepestsProgress", 40);
+    });
+    g.args.resources.potionprice = 1000;
+    const spooky = spec(g, "spooky");
+    const hot = spec(g, "hot");
+    const cold = spec(g, "cold");
+    g.economics.primeZoneVerdicts([spooky, hot, cold]);
+    const spookyVerdict = g.economics.zoneVerdict(spooky);
+    const hotVerdict = g.economics.zoneVerdict(hot);
+    const coldVerdict = g.economics.zoneVerdict(cold);
+    expect(spookyVerdict.res).toBe(18);
+    expect(spookyVerdict.potionCost).toBe(100);
+    expect(hotVerdict.willFarm).toBe(true);
+    expect(hotVerdict.turns).toBe(10);
+    // The stack is spent: cold prices at its own gear res and rate, 9 fights of 60%.
+    expect(coldVerdict.res).toBe(12);
+    expect(coldVerdict.ratePct).toBeCloseTo(6.8);
+    expect(coldVerdict.fights).toBe(9);
+    expect(coldVerdict.potionCost).toBe(0);
+  });
+
+  it("keeps one carried entry per effect when a later zone re-ups the same stack", async () => {
+    // The dedupe half of the carried-stack contract: KoL MERGES re-applied effect
+    // turns into one stack, so when a middle zone re-plans an effect an earlier zone
+    // already left running, the budget must extend the one entry — two entries for
+    // one Effect would both pass a later zone's filter and its resistance would be
+    // credited twice, pricing that zone a full tier high with no potion plan left to
+    // recover (candidateResPlans skips carried effects).
+    const g = await loadGame((t) => {
+      standardScenario(t, { fishyTurns: 100 });
+      t.specRes({ spooky: 15, hot: 15, cold: 12 });
+      // pec oil sits in every zone's default list. 21-turn all-element stack:
+      //   spooky: buys 1, farms 10 turns → 11 left — one turn SHORT of hot's 12
+      //     gear-turns, so hot is not told about it and plans its own copy,
+      //     hitting the merge branch (the residual, aged to 1, is still alive).
+      //   hot: buys 1, farms 10 turns → one entry of 1 + 21 = 22 turns.
+      //   cold: needs 1 gear-turn (94% done) → the entry passes its filter once.
+      t.item("pec oil", {
+        mall: 100,
+        sale: 50,
+        effect: "Oiled-Up",
+        duration: 21,
+        res: { all: 3 },
+      });
+      t.prop("_unblemishedPearlTheBriniestDeepestsProgress", 94);
+    });
+    g.args.resources.potionprice = 1000;
+    const spooky = spec(g, "spooky");
+    const hot = spec(g, "hot");
+    const cold = spec(g, "cold");
+    g.economics.primeZoneVerdicts([spooky, hot, cold]);
+    const spookyVerdict = g.economics.zoneVerdict(spooky);
+    const hotVerdict = g.economics.zoneVerdict(hot);
+    const coldVerdict = g.economics.zoneVerdict(cold);
+    // Both earlier zones bought their own copy and farmed.
+    expect(spookyVerdict.res).toBe(18);
+    expect(spookyVerdict.potionCost).toBe(100);
+    expect(hotVerdict.res).toBe(18);
+    expect(hotVerdict.potionCost).toBe(100);
+    expect(hotVerdict.willFarm).toBe(true);
+    // cold credits the carried +3 exactly ONCE: 12 + 3 = 15, the 8.5% tier.
+    // A duplicated entry would price it at 12 + 3 + 3 = 18 and the 10% tier.
+    expect(coldVerdict.res).toBe(15);
+    expect(coldVerdict.ratePct).toBeCloseTo(8.5);
+    expect(coldVerdict.potionCost).toBe(0);
+    expect(coldVerdict.potionPlan.use).toHaveLength(0);
+  });
+});
+
+describe("Lucky! refresh economics", () => {
+  it("models a free refresh as +19 covered fights and +1 trip turn", async () => {
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 18, fishyTurns: 0 });
+      t.item("11-leaf clover", { count: 1 });
+      t.prop("_cloversPurchased", 3); // no hermit refills muddying the cascade
+    });
+    g.args.resources.luckyfishy = true;
+    const v = g.economics.zoneVerdict(spec(g, "cold"));
+    expect(v.refreshesUsed).toBe(1);
+    expect(v.refreshCost).toBe(0);
+    expect(v.fishyUsed).toBe(10);
+    // 10 fights ×2 − 10 covered + 1 trip turn.
+    expect(v.turns).toBe(11);
+    expect(v.profit).toBe(50_000 - 11_000);
+  });
+
+  it("prices both sides of a res step from the same untouched refresh queue", async () => {
+    // resStepWorthIt costs the zone twice against ONE budget; if costZone consumed the
+    // queue, the with-step side would price refresh-less and the step would be refused.
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 18, fishyTurns: 0 });
+      t.item("11-leaf clover", { count: 1 });
+      t.prop("_cloversPurchased", 3);
+    });
+    g.args.resources.luckyfishy = true;
+    // without: 12 fights → refresh → 13 turns → 37,000. with: 10 → 11 turns → 39,000.
+    expect(g.economics.resStepWorthIt(spec(g, "cold"), 15, 3, 0)).toBe(true);
+  });
+});
+
+describe("valuation fallback", () => {
+  it("falls back to historical prices when garbo-lib valuation throws", async () => {
+    const g = await loadGame((t) => {
+      t.state.makeValueThrows = true;
+    });
+    const pearl = g.item("unblemished pearl", { historical: 1234 });
+    expect(g.economics.garboValue(pearl)).toBe(1234);
+  });
+});
