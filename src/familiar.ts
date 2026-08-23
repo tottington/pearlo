@@ -1,18 +1,9 @@
-import {
-  Familiar,
-  Item,
-  getWorkshed,
-  maximize,
-  myFamiliar,
-  numericModifier,
-  print,
-  useFamiliar,
-} from "kolmafia";
+import { Familiar, Item, getWorkshed } from "kolmafia";
 import { $effects, $element, $familiar, $item, $items, get, have } from "libram";
 
 import { args } from "./args";
 import { asdonFualable } from "./lib";
-import { PearlSpec, resModifierName } from "./zones";
+import { PearlSpec } from "./zones";
 
 export type FamiliarPlan = {
   familiar?: Familiar;
@@ -75,34 +66,6 @@ export function predictedPlayerAirByEffect(): boolean {
 }
 
 /**
- * Pass 1 of two-pass outfitting (user design, 2026-08-07): speculate WITHOUT familiar
- * help — is the 18-res cap reachable from gear/effects alone? `18 max 18 min` makes the
- * speculative maximize() return false exactly when the cap can't be met. Only constrain
- * player breathing, and only when it isn't already effect-covered (user refinement:
- * breathing keywords are needed exactly when an effect doesn't already guarantee air
- * independent of equipment choices).
- */
-export function resCapMetWithoutFamiliar(spec: PearlSpec): boolean {
-  // The speculation includes the ACTIVE familiar's contributions, which contaminated
-  // the benchmark (session log 2026-08-07: res familiar equipped on fight N made
-  // fight N+1 conclude "cap met without familiar", drop it, and fight at 8.3%/10% —
-  // alternating). Drop the familiar first so the benchmark is honestly familiar-free.
-  const priorFamiliar = myFamiliar();
-  if (priorFamiliar !== $familiar.none) useFamiliar($familiar.none);
-  const breathing = playerAirByEffect() ? "" : ", adventure underwater";
-  const met = maximize(`${spec.key} res 18 max 18 min${breathing}`, true);
-  // The 2026-08-07 fix above did NOT stop the flip-flop: session 2026-08-09 alternated
-  // capMet true/false every Anemone Mine fight even familiar-free, tracking whichever
-  // outfit the previous fight left equipped. Log the benchmark's inputs and answer each
-  // call so the flapping input can be identified from a normal session log.
-  print(
-    `[pearlo/resbench] ${spec.key}: capMet=${met} wornRes=${numericModifier(resModifierName(spec.key))} ` +
-      `priorFamiliar=${priorFamiliar} airByEffect=${playerAirByEffect()}`,
-  );
-  return met;
-}
-
-/**
  * Familiars worth offering the maximizer via `switch` when resistance still needs help:
  * elemental-res familiars plus the holding hands (whose extra off-hand/weapon slot the
  * maximizer fills with res gear). With `sea` in the string the maximizer also enforces
@@ -123,11 +86,10 @@ export function resFamiliarSwitches(spec: PearlSpec): string {
 }
 
 /**
- * Damage/utility familiar plan, independent of the res benchmark: holding hands with a
- * second lantern (breathing-free only), else delevel breathers, else a weight familiar
- * strapped with breathing gear, else no familiar. Used directly by outfit-override zones
- * (whose saved outfit already IS the res plan, so no res-switch offer applies) and as the
- * fallback tail of pickPearlFamiliar's two-pass plan.
+ * Damage/utility familiar plan: holding hands with a second lantern (breathing-free
+ * only), else delevel breathers, else a weight familiar strapped with breathing gear,
+ * else no familiar. The default plan for every zone; buildPearlOutfit only offers the
+ * slot to the maximizer after a dressed build measures short of the cap (outfit.ts).
  */
 export function pickUtilityFamiliar(secondLantern?: Item): FamiliarPlan {
   if (familiarBreathesFree()) {
@@ -153,22 +115,4 @@ export function pickUtilityFamiliar(secondLantern?: Item): FamiliarPlan {
     if (any) return { familiar: any, famequip: boot };
   }
   return {};
-}
-
-/**
- * Two-pass familiar planning (user design, 2026-08-07). Always run a familiar:
- * - Res cap already met without familiar help → the slot goes to damage/utility:
- *   holding hands with a second lantern (breathing-free only), else delevel breathers.
- * - Cap NOT met → hand the choice to the maximizer with `switch` directives over
- *   elemental familiars and the holding hands; it weighs their res contributions
- *   (including hand-held res gear) against the rest of the outfit.
- */
-export function pickPearlFamiliar(spec: PearlSpec, secondLantern?: Item): FamiliarPlan {
-  if (!resCapMetWithoutFamiliar(spec)) {
-    const switches = resFamiliarSwitches(spec);
-    if (switches.length > 0) return { extraModifier: switches };
-    // No res-capable familiar owned — fall through to damage/utility below.
-  }
-
-  return pickUtilityFamiliar(secondLantern);
 }
