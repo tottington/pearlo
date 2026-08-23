@@ -4,6 +4,8 @@ import {
   Familiar,
   Item,
   Slot,
+  booleanModifier,
+  canEquip,
   equippedItem,
   haveEffect,
   historicalPrice,
@@ -22,6 +24,7 @@ import { args, familiarOverride, outfitOverride } from "./args";
 import { damagePlan, wineglassAccessible } from "./combat";
 import { familiarBreathesFree, predictedPlayerAirByEffect, resFamiliarSwitches } from "./familiar";
 import { FISHY_PIPE_TURNS, HAGGLING_FISHY_TURNS, luckyRefreshCosts } from "./fishy";
+import { predictedFreeResBonus } from "./mood";
 import {
   LiverMode,
   allOrganEquipment,
@@ -32,7 +35,14 @@ import {
   setLiverMode,
   liverMode,
 } from "./organs";
-import { PearlKey, PearlSpec, familiarWaterBreathingEquipment } from "./zones";
+import {
+  PEARL_RES_CAP,
+  PEARL_RES_HEADROOM,
+  PearlKey,
+  PearlSpec,
+  familiarWaterBreathingEquipment,
+  resModifierName,
+} from "./zones";
 
 // ---------- valuation (garbo-lib preferred over raw mallPrice — user directive) ----------
 
@@ -154,16 +164,33 @@ function cureCostPerFight(spec: PearlSpec, exposedRounds: number): number {
 
 // ---------- speculative resistance per configuration ----------
 
-const RES_STEPS = [18, 15, 12, 9, 6, 3];
+/**
+ * Resistance a speculative maximize reaches, or undefined when the configuration is not
+ * actually reachable. Read from the result rather than the boolean — maximize() also
+ * returns false when nothing beat the outfit already worn — but when every candidate
+ * fails, `best` is the highest-scoring *failed* spec, so the requirements have to be
+ * re-checked here or an unreachable configuration prices as its unconstrained best.
+ */
+function speculativeRes(
+  modifier: string,
+  spec: PearlSpec,
+  forceEquip: Item[],
+  flags: string[],
+): number | undefined {
+  // mafia drops unequippable items before it honours `+equip`, so a forced item we
+  // cannot wear yields an outfit silently missing it rather than a failure we can see.
+  if (!forceEquip.every((i) => have(i) && canEquip(i))) return undefined;
+  maximize(modifier, true);
+  if (flags.some((f) => !booleanModifier("Generated:_spec", f))) return undefined;
+  return numericModifier("Generated:_spec", resModifierName(spec.key));
+}
 
 /**
- * Highest progress-relevant resistance floor this configuration can reach. Progress
- * only moves in steps of 3 res (floor(res/3)), so stepping down RES_STEPS is exact at
- * the granularity that matters. Speculative maximizes are local computation.
+ * Highest progress-relevant resistance this configuration can reach.
  *
- * Two flavors are evaluated when the familiar slot is free, and the better floor wins,
- * because none of resFamiliarSwitches' candidates (Exotic Parrot, Mu, Left-Hand Man,
- * Disembodied Hand, Cooler Yeti) breathe underwater innately:
+ * Two flavors are evaluated when the familiar slot is free, and the better wins, because
+ * none of resFamiliarSwitches' candidates (Exotic Parrot, Mu, Left-Hand Man, Disembodied
+ * Hand, Cooler Yeti) breathe underwater innately:
  * - Familiar-free: no familiar switches offered, so only the player's own breathing is
  *   constrained — always legally reachable regardless of familiar-breathing gear owned.
  * - Switch: offers resFamiliarSwitches(spec), constrained by `sea` (Adventure Underwater
@@ -174,6 +201,9 @@ const RES_STEPS = [18, 15, 12, 9, 6, 3];
  * `underwater familiar` is added unless the familiar already breathes for free (effect
  * or innately underwater) — its +1 liver only counts while active, so it can't be
  * swapped out the way switch candidates can.
+ *
+ * The zone's free resistance buffs are added on top — the run casts them before dressing.
+ * Clamped to the cap: progress stops improving there, and callers print this figure.
  */
 function speculativeResFloor(spec: PearlSpec, forceEquip: Item[], familiar?: Familiar): number {
   const saved = myFamiliar();
@@ -182,50 +212,47 @@ function speculativeResFloor(spec: PearlSpec, forceEquip: Item[], familiar?: Fam
     // task grants effect air — modeling gear air on a day the cascade will free the
     // slot minutes later understated every zone's res floor.
     const equips = forceEquip.map((i) => `, +equip ${i}`).join("");
-    const playerBreathing = predictedPlayerAirByEffect() ? "" : ", adventure underwater";
+    const airByEffect = predictedPlayerAirByEffect();
+    const playerBreathing = airByEffect ? "" : ", adventure underwater";
+    const playerFlags = airByEffect ? [] : ["Adventure Underwater"];
+    const target = PEARL_RES_CAP + PEARL_RES_HEADROOM;
+    const buffs = predictedFreeResBonus(spec);
+    const capped = (res: number) => Math.min(res + buffs, PEARL_RES_CAP);
 
     if (familiar === undefined) {
       useFamiliar($familiar.none);
-      let floor = 0;
-      for (const n of RES_STEPS) {
-        if (maximize(`${spec.key} res ${n} max ${n} min${playerBreathing}${equips}`, true)) {
-          floor = n;
-          break;
-        }
-      }
+      const free = speculativeRes(
+        `${spec.key} res ${target} max${playerBreathing}${equips}`,
+        spec,
+        forceEquip,
+        playerFlags,
+      );
+      let best = free ?? 0;
 
-      const switches = floor < RES_STEPS[0] ? resFamiliarSwitches(spec) : [];
+      const switches = capped(best) < PEARL_RES_CAP ? resFamiliarSwitches(spec) : [];
       if (switches.length > 0) {
-        const familiarBreathing = predictedPlayerAirByEffect() ? ", underwater familiar" : ", sea";
-        for (const n of RES_STEPS) {
-          if (
-            maximize(
-              `${spec.key} res ${n} max ${n} min${familiarBreathing}${equips}, ${switches}`,
-              true,
-            )
-          ) {
-            floor = Math.max(floor, n);
-            break;
-          }
-        }
+        const familiarBreathing = airByEffect ? ", underwater familiar" : ", sea";
+        const switched = speculativeRes(
+          `${spec.key} res ${target} max${familiarBreathing}${equips}, ${switches}`,
+          spec,
+          forceEquip,
+          [...playerFlags, "Underwater Familiar"],
+        );
+        if (switched !== undefined) best = Math.max(best, switched);
       }
-      return floor;
+      return free === undefined && best === 0 ? 0 : capped(best);
     }
 
     useFamiliar(familiar);
-    const familiarBreathing =
-      !familiarBreathesFree() && !familiar.underwater ? ", underwater familiar" : "";
-    for (const n of RES_STEPS) {
-      if (
-        maximize(
-          `${spec.key} res ${n} max ${n} min${playerBreathing}${familiarBreathing}${equips}`,
-          true,
-        )
-      ) {
-        return n;
-      }
-    }
-    return 0;
+    const familiarNeedsGear = !familiarBreathesFree() && !familiar.underwater;
+    const familiarBreathing = familiarNeedsGear ? ", underwater familiar" : "";
+    const pinned = speculativeRes(
+      `${spec.key} res ${target} max${playerBreathing}${familiarBreathing}${equips}`,
+      spec,
+      forceEquip,
+      familiarNeedsGear ? [...playerFlags, "Underwater Familiar"] : playerFlags,
+    );
+    return pinned === undefined ? 0 : capped(pinned);
   } finally {
     useFamiliar(saved);
   }
@@ -237,7 +264,8 @@ function speculativeResFloor(spec: PearlSpec, forceEquip: Item[], familiar?: Fam
  * real override run picks a utility/breathing familiar (~0 res), so a res familiar
  * active at launch (Exotic Parrot) would otherwise inflate the estimate and break the
  * never-optimistic contract. ESTIMATE: free slots may add a little res in the real run
- * (they keep whatever the breathing-only maximize leaves there) — conservative.
+ * (they keep whatever the breathing-only maximize leaves there) — conservative. The
+ * zone's free resistance buffs are counted, as they are for non-override zones.
  */
 function overrideResEstimate(spec: PearlSpec, forcedItems: Item[]): number {
   const saved = myFamiliar();
@@ -246,7 +274,12 @@ function overrideResEstimate(spec: PearlSpec, forcedItems: Item[]): number {
     const resName = `${spec.key.charAt(0).toUpperCase()}${spec.key.slice(1)} Resistance`;
     const equippedContribution = sum(Slot.all(), (s) => numericModifier(equippedItem(s), resName));
     const nonEquipment = Math.max(0, numericModifier(resName) - equippedContribution);
-    return nonEquipment + sum(forcedItems, (i) => numericModifier(i, resName));
+    return Math.min(
+      nonEquipment +
+        sum(forcedItems, (i) => numericModifier(i, resName)) +
+        predictedFreeResBonus(spec),
+      PEARL_RES_CAP,
+    );
   } finally {
     useFamiliar(saved);
   }

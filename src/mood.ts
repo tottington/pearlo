@@ -33,11 +33,13 @@ import {
   $items,
   get,
   have,
+  sum,
   uneffect,
+  withProperties,
 } from "libram";
 
 import { args } from "./args";
-import { tryAcquiringEffect } from "./lib";
+import { canAcquireEffect, tryAcquiringEffect } from "./lib";
 import { wineglassMode } from "./organs";
 import { PEARL_RES_CAP, PearlKey, PearlSpec, resModifierName } from "./zones";
 
@@ -125,7 +127,7 @@ const WEIGHT_RES_FAMILIARS = $familiars`Exotic Parrot, Mu`;
 const FAMILIAR_WEIGHT_POTIONS = $items`temporary teardrop tattoo, sea grease`;
 
 /** Use owned underwater famweight potions while a weight-scaled res familiar is out. */
-function topUpFamiliarWeight(spec: PearlSpec): void {
+export function topUpFamiliarWeight(spec: PearlSpec): void {
   if (!WEIGHT_RES_FAMILIARS.includes(myFamiliar())) return;
   const resName = resModifierName(spec.key);
   if (numericModifier(resName) >= PEARL_RES_CAP) return;
@@ -138,6 +140,92 @@ function topUpFamiliarWeight(spec: PearlSpec): void {
     const duration = Math.max(1, numericModifier(it, "Effect Duration"));
     use(it, Math.min(itemAmount(it), Math.ceil(need / duration)));
   }
+}
+
+const implementWarned = new Set<Effect>();
+
+/**
+ * Acquire a buff for MP, never meat (user policy): mafia otherwise buys a skill's
+ * casting implement through retrieveItem. Storage is off too — while either mall or
+ * storage is live mafia stops at the *default* tool and errors out instead of falling
+ * back to a lesser one we own. topUpRes still buys potions, under the potionprice gate.
+ *
+ * A buff we expected to land and didn't is announced once: silently dropping the
+ * spell-damage songs for want of an accordion would be a large, invisible cost.
+ */
+function acquireEffectFree(ef: Effect): void {
+  const expected = canAcquireEffect(ef);
+  withProperties(
+    {
+      autoSatisfyWithMall: false,
+      autoSatisfyWithNPCs: false,
+      autoSatisfyWithCoinmasters: false,
+      autoSatisfyWithStorage: false,
+    },
+    () => tryAcquiringEffect(ef),
+  );
+  if (expected && !have(ef) && !implementWarned.has(ef)) {
+    implementWarned.add(ef);
+    print(
+      `pearlo: skipped ${ef} — its casting implement isn't in inventory and buffs never ` +
+        `spend meat. Acquire the implement to get this buff back.`,
+      "red",
+    );
+  }
+}
+
+/** The zone's resistance skill-buffs: all-element plus its own partial-element set. */
+function resBuffs(spec: PearlSpec): Effect[] {
+  return [
+    ...ALL_ELEMENT_RES_EFFECTS,
+    ...PARTIAL_RES_EFFECTS.filter(([, elements]) => elements.includes(spec.element)).map(
+      ([ef]) => ef,
+    ),
+  ];
+}
+
+/**
+ * Cast the zone's resistance buffs before the outfit is built, so the maximizer plans
+ * against buffed resistance instead of spending slots to make up the difference.
+ * Repeating is cheap (a have() check each), and pearlMood re-tries anything skipped.
+ */
+export function castFreeResBuffs(spec: PearlSpec): void {
+  const pending = resBuffs(spec).filter((ef) => !have(ef));
+  if (pending.length === 0) return;
+  // Restore first: canAcquireEffect gates casts on current MP, so buffing on a low-MP
+  // entry silently skips them and leaves the maximizer on an unbuffed baseline — the
+  // very ordering this pass exists to fix.
+  const cost = pendingCastCosts(pending);
+  if (myMp() < cost.mp) restoreMp(Math.min(myMaxmp(), cost.mp));
+  if (myHp() <= cost.hp) restoreHp(myMaxhp());
+  for (const ef of pending) acquireEffectFree(ef);
+}
+
+/** Feel Peaceful is 3/day, and a spent skill still reads have(). */
+function dailyCastsLeft(ef: Effect): boolean {
+  return ef !== $effect`Feeling Peaceful` || get("_feelPeacefulUsed", 0) < 3;
+}
+
+/** True when this effect's own acquisition is a cast of a skill we know — the free path. */
+function freelyCastable(ef: Effect): boolean {
+  if (!ef.default) return false;
+  const parts = ef.default.split(" ");
+  if (parts[0] !== "cast") return false;
+  return have(toSkill(parts.slice(2).join(" ")));
+}
+
+/**
+ * Resistance castFreeResBuffs is about to add, for the profit model to price zones at
+ * the tier they will actually farm at. Active effects are excluded (already measured);
+ * MP is not a gate, since pearlMood restores before it buffs. ESTIMATE: a skill whose
+ * casting implement we lack is counted here but skipped by the free-buff pass.
+ */
+export function predictedFreeResBonus(spec: PearlSpec): number {
+  const resName = resModifierName(spec.key);
+  return sum(
+    resBuffs(spec).filter((ef) => !have(ef) && freelyCastable(ef) && dailyCastsLeft(ef)),
+    (ef) => numericModifier(ef, resName),
+  );
 }
 
 /** Per-zone res top-up potions (overrides.<key>resitems), parsed and warned once. */
@@ -326,7 +414,7 @@ export function pearlMood(spec: PearlSpec, mpPerFight: number): void {
   if (myMp() < mpTrigger) restoreMp(mpTarget);
   if (myHp() <= pending.hp || myHp() < hpFloor * myMaxhp()) restoreHp(myMaxhp());
 
-  for (const ef of buffs) tryAcquiringEffect(ef);
+  for (const ef of buffs) acquireEffectFree(ef);
 
   topUpFamiliarWeight(spec);
   topUpRes(spec);

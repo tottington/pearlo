@@ -43,7 +43,7 @@ import {
   wineglassAccessible,
 } from "./combat";
 import { zoneVerdict } from "./economics";
-import { pickUtilityFamiliar, playerAirByEffect } from "./familiar";
+import { pickUtilityFamiliar, playerAirByEffect, resFamiliarSwitches } from "./familiar";
 import {
   FISHY_PIPE_TURNS,
   acquireLucky,
@@ -51,9 +51,9 @@ import {
   remainingPearlFights,
 } from "./fishy";
 import { abortIfBeatenUp, asdonFualable, fuelUp, handlePostCombatBeatenUp } from "./lib";
-import { pearlMood } from "./mood";
+import { castFreeResBuffs, pearlMood, topUpFamiliarWeight } from "./mood";
 import { wineglassMode } from "./organs";
-import { buildPearlOutfit, familiarPlanPathFor } from "./outfit";
+import { buildPearlOutfit, familiarModeApplies, familiarModeFor, setFamiliarMode } from "./outfit";
 import {
   PEARL_RES_CAP,
   PEARLS,
@@ -302,6 +302,74 @@ function turnsNeeded(spec: PearlSpec): number {
   return covered + (fights - covered) * 2;
 }
 
+/** Zones whose one escalation attempt has already been spent (win or lose). */
+const escalationTried = new Set<PearlKey>();
+
+/** Below-cap fights lose progress, so say so every time — never latch this warning. */
+function warnBelowCap(spec: PearlSpec, res: number): void {
+  print(
+    `pearlo: ${spec.loc} is fighting at ${res} ${spec.key} res (< ${PEARL_RES_CAP} cap) — ` +
+      `${(1.7 * Math.floor(res / 3)).toFixed(1)}%/fight instead of 10%.`,
+    "red",
+  );
+}
+
+/**
+ * Dress-then-verify: measure the real outfit once it is dressed and buffed, and only
+ * then, if it is short of the cap, try the res-familiar build and keep whichever
+ * measures higher. The experiment runs once per zone; the warning does not. Returns
+ * true when it leaves a different build dressed than the mood was sized against.
+ */
+function escalateFamiliarIfShort(spec: PearlSpec): boolean {
+  const res = numericModifier(resModifierName(spec.key));
+  if (res >= PEARL_RES_CAP) return false;
+
+  // A zone that pins its familiar (stooper, familiar override, outfit override) would
+  // rebuild the identical outfit, and with no res familiar owned there is nothing to
+  // switch to — in both cases the dress is pure waste.
+  const canEscalate =
+    familiarModeApplies(spec) &&
+    resFamiliarSwitches(spec).length > 0 &&
+    familiarModeFor(spec.key) !== "switch" &&
+    !escalationTried.has(spec.key);
+  if (!canEscalate) {
+    warnBelowCap(spec, res);
+    return false;
+  }
+  escalationTried.add(spec.key);
+
+  print(
+    `pearlo: ${spec.loc} dressed and buffed to ${res} ${spec.key} res — trying the res familiar`,
+  );
+  Outfit.from(
+    buildPearlOutfit(spec, "switch"),
+    new Error(`pearlo: res-familiar outfit for ${spec.loc} could not be built`),
+  ).dress();
+  // The res familiars scale with weight, and the weight potions are only spent on a
+  // familiar that scales — the mood ran against the utility pick, so top up now or the
+  // candidate is judged up to 15 lbs light.
+  topUpFamiliarWeight(spec);
+
+  const switched = numericModifier(resModifierName(spec.key));
+  if (switched > res) {
+    setFamiliarMode(spec.key, "switch");
+    print(`pearlo: ${spec.loc} res familiar reaches ${switched} ${spec.key} res — keeping it`);
+    if (switched < PEARL_RES_CAP) warnBelowCap(spec, switched);
+    return true;
+  }
+  Outfit.from(
+    buildPearlOutfit(spec, "utility"),
+    new Error(`pearlo: utility outfit for ${spec.loc} could not be built`),
+  ).dress();
+  const reverted = numericModifier(resModifierName(spec.key));
+  print(
+    `pearlo: ${spec.loc} res familiar reached only ${switched} ${spec.key} res — reverted to ` +
+      `the utility build at ${reverted}`,
+  );
+  if (reverted < PEARL_RES_CAP) warnBelowCap(spec, reverted);
+  return false;
+}
+
 function pearlTask(spec: PearlSpec): Task {
   // Snapshot for post()'s Beaten Up attribution: a cleaver NC firing mid-chain adds
   // its choice id to this queue (see handlePostCombatBeatenUp).
@@ -326,27 +394,15 @@ function pearlTask(spec: PearlSpec): Task {
     prepare: () => {
       abortIfBeatenUp(`before adventuring in ${spec.loc}`);
       cleaverQueueBefore = get("juneCleaverQueue");
-      // Post-dress res verification (session 2026-08-09): switch-path builds landed at
-      // 15–17 real res while the maximizer's model said 18 — 8.3%/fight instead of 10%.
-      // When that happens, re-dress with the utility-familiar build, which hit the cap
-      // every fight that session. Runs before damagePlan/mood so both see final gear.
-      const dressedRes = numericModifier(resModifierName(spec.key));
-      if (dressedRes < PEARL_RES_CAP && familiarPlanPathFor(spec.key) === "switch") {
-        print(
-          `pearlo: ${spec.loc} dressed to ${dressedRes} ${spec.key} res (< ${PEARL_RES_CAP} cap) on the ` +
-            `maximizer switch path — re-dressing with the utility-familiar build`,
-          "red",
-        );
-        Outfit.from(
-          buildPearlOutfit(spec, true),
-          new Error(`pearlo: fallback outfit for ${spec.loc} could not be built`),
-        ).dress();
-        print(
-          `pearlo: ${spec.loc} fallback build reaches ${numericModifier(resModifierName(spec.key))} ${spec.key} res`,
-        );
-      }
       const plan = damagePlan(spec.maxHp); // post-dress: real equipped modifiers
       pearlMood(spec, plan.mpPerFight);
+      // Only now is the outfit both dressed and buffed, so only now is its resistance
+      // worth measuring against the cap.
+      if (escalateFamiliarIfShort(spec)) {
+        // A kept escalation changes both familiar and cast count: re-run the mood so the
+        // MP buffer and weight potions match the build we actually fight in.
+        pearlMood(spec, damagePlan(spec.maxHp).mpPerFight);
+      }
       if (wineglassMode()) {
         // Wineglass combat is attack-only: no stuns, no items. Policy (user): halt
         // entirely unless the equipped weapon one-shots the zone's toughest monster
@@ -390,7 +446,12 @@ function pearlTask(spec: PearlSpec): Task {
       }
       lastRecordedProgress.set(spec.key, progress);
     },
-    outfit: () => buildPearlOutfit(spec),
+    outfit: () => {
+      // Last hook before the maximizer runs (grimoire dresses before prepare), so the
+      // buffs have to be cast here to be in the outfit's model at all.
+      castFreeResBuffs(spec);
+      return buildPearlOutfit(spec);
+    },
     // The plan is computed inside the thunk: grimoire compiles macros AFTER dress but
     // BEFORE prepare (engine.js execute()), so a shared closure variable served fight 1
     // a plan priced on launch gear — optimistic launch gear skipped Entangling Noodles
