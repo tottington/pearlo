@@ -105,6 +105,28 @@ export function capeMode(spec: PearlSpec): "kill" | "hold" {
   return plan.casts <= 3 ? "kill" : "hold";
 }
 
+/**
+ * The non-resistance weights the real dress carries. Exported so the profit model can
+ * speculate the same expression: a maximize for pure resistance reaches a higher figure
+ * than the outfit the run actually wears, and pricing a zone on gear it will not dress
+ * makes it under-buy and farm a tier below its estimate.
+ *
+ * Overdrunk chases the one-shot floor instead. 'effective' (weapon class matched to the
+ * better attack stat) only applies when NO weapon is forced — it could contradict the
+ * configured drunkweapon's class and fail every combination.
+ */
+export function pearlOutfitWeights(overdrunk: boolean, weaponForced: boolean): string {
+  const combat = overdrunk
+    ? `${weaponForced ? "" : ", effective"}, 0.2 weapon damage, 0.2 weapon damage percent`
+    : ", 0.1 item";
+  return `, 0.05 hp regen, 0.05 mp regen${combat}`;
+}
+
+/** Items the real dress refuses, as maximizer terms, so a speculation can refuse them too. */
+export function pearlAvoidTerms(spec: PearlSpec): string {
+  return [...GLOBAL_AVOID, ...(spec.avoid ?? [])].map((i) => `, -"equip ${i}"`).join("");
+}
+
 export function buildPearlOutfit(spec: PearlSpec, familiarMode?: FamiliarMode): OutfitSpec {
   const overdrunk = wineglassMode();
   const outfitName = outfitOverride(spec.key);
@@ -259,10 +281,7 @@ export function buildPearlOutfit(spec: PearlSpec, familiarMode?: FamiliarMode): 
   // it could contradict the configured drunkweapon's class and fail every combination.
   const weaponForced =
     overdrunk && (organEquip.includes($item`angelbone totem`) || have(args.major.drunkweapon));
-  const combatWeights = overdrunk
-    ? `${weaponForced ? "" : ", effective"}, 0.2 weapon damage, 0.2 weapon damage percent`
-    : ", 0.1 item";
-  const baseModifier = `${spec.key} res ${PEARL_RES_CAP + PEARL_RES_HEADROOM} max${breathingKeywords(familiarPlan)}, 0.05 hp regen, 0.05 mp regen${combatWeights}`;
+  const baseModifier = `${spec.key} res ${PEARL_RES_CAP + PEARL_RES_HEADROOM} max${breathingKeywords(familiarPlan)}${pearlOutfitWeights(overdrunk, weaponForced)}`;
   const result: OutfitSpec = {
     modifier: familiarPlan.extraModifier
       ? `${baseModifier}, ${familiarPlan.extraModifier}`
