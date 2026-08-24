@@ -66,6 +66,14 @@ export const PEARL_RES_CAP = 18;
  */
 export const PEARL_RES_HEADROOM = 3;
 
+/**
+ * How hard the outfit chases resistance relative to its tiebreakers. At weight 1 a
+ * single +25% item accessory (2.5 points under `0.1 item`) outscored a +3 resistance
+ * one, so the slot flipped between fights and the zone farmed a tier low. Resistance is
+ * the point of the outfit; the regen and item terms are only meant to break ties.
+ */
+export const PEARL_RES_WEIGHT = 3;
+
 /** Pearl progress per fight at a given resistance: 1.7% per 3 res, floored, capped at 10%. */
 export function progressRatePct(res: number): number {
   return Math.max(1.7, Math.min(10, 1.7 * Math.floor(res / 3)));

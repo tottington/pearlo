@@ -318,12 +318,14 @@ function escalateFamiliarIfShort(spec: PearlSpec): boolean {
   // A zone that pins its familiar (stooper, familiar override, outfit override) would
   // rebuild the identical outfit, and with no res familiar owned there is nothing to
   // switch to — in both cases the dress is pure waste.
-  const canEscalate =
-    familiarModeApplies(spec) &&
-    resFamiliarSwitches(spec).length > 0 &&
-    familiarModeFor(spec.key) !== "switch" &&
-    !escalationTried.has(spec.key);
-  if (!canEscalate) return false;
+  if (!familiarModeApplies(spec) || resFamiliarSwitches(spec).length === 0) return false;
+
+  // The latch covers the experiment, not the measurement. A zone that already settled on
+  // the res familiar can still dress short later — the maximizer picks a different
+  // accessory as the state moves — so re-run the comparison whenever we are under the
+  // cap rather than warning about it for the rest of the zone.
+  const settled = familiarModeFor(spec.key) === "switch";
+  if (!settled && escalationTried.has(spec.key)) return false;
   escalationTried.add(spec.key);
 
   print(

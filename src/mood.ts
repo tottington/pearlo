@@ -191,18 +191,10 @@ export function topUpFamiliarWeight(spec: PearlSpec, worthIt: WorthIt, turnsFor:
 const implementWarned = new Set<Effect>();
 
 /**
- * Acquire a buff for MP, never meat (user policy): mafia otherwise buys a skill's
- * casting implement through retrieveItem. Storage is off too — while either mall or
- * storage is live mafia stops at the *default* tool and errors out instead of falling
- * back to a lesser one we own. topUpRes buys potions separately, priced against turns.
- *
- * A buff we expected to land and didn't is announced once: silently dropping the
- * spell-damage songs for want of an accordion would be a large, invisible cost.
- */
-/**
- * Run `action` with every buy-side source off. Wrapped around a whole buff pass rather
- * than each cast: mafia logs all four preferences on every change, so per-cast wrapping
- * printed about a hundred lines a turn.
+ * Run `action` with every buy-side source off, so buffs cost MP and never meat: mafia
+ * otherwise buys a skill's casting implement through retrieveItem, stopping at the
+ * class *default* tool rather than a lesser one already owned. Wrapped around a whole
+ * buff pass rather than each cast, since mafia logs all four preferences per change.
  */
 function withoutBuying<T>(action: () => T): T {
   return withProperties(
@@ -216,7 +208,11 @@ function withoutBuying<T>(action: () => T): T {
   );
 }
 
-/** Acquire one buff. Callers must already be inside withoutBuying. */
+/**
+ * Acquire one buff. Callers must already be inside withoutBuying. A buff we expected to
+ * land and didn't is announced once: silently dropping the spell-damage songs for want
+ * of an accordion would be a large, invisible cost.
+ */
 function acquireEffectFree(ef: Effect): void {
   const expected = canAcquireEffect(ef);
   // Buff implements are not budgetable: mafia retrieves the *default* tool of the class

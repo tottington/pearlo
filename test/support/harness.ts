@@ -29,6 +29,8 @@ export type ItemOptions = {
   duration?: number;
   /** Resistance the granted effect provides, per element name or "all". */
   res?: Partial<Record<"spooky" | "sleaze" | "hot" | "stench" | "cold" | "all", number>>;
+  /** False marks the item owned but unwearable, as Standard restriction does. */
+  canEquip?: boolean;
   /** Copies in inventory. */
   count?: number;
   tradeable?: boolean;
@@ -77,6 +79,8 @@ function makeTools(mocks: Mocks, state: GameState): Tools {
     if (options.historical !== undefined) state.historicalPrices.set(it, options.historical);
     if (options.sale !== undefined) state.saleValues.set(it, options.sale);
     if (options.count !== undefined) state.inventory.set(it, options.count);
+    if (options.canEquip === false) state.unequippable.add(it);
+    else if (options.canEquip === true) state.unequippable.delete(it);
     if (options.tradeable === false) state.untradeable.add(it);
     const mods = state.itemMods.get(it) ?? {};
     if (options.duration !== undefined) mods["Effect Duration"] = options.duration;
@@ -152,6 +156,7 @@ export type Game = Tools & {
   mood: typeof import("../../src/mood");
   organs: typeof import("../../src/organs");
   outfit: typeof import("../../src/outfit");
+  familiarModule: typeof import("../../src/familiar");
   fishyModule: typeof import("../../src/fishy");
   pearls: typeof import("../../src/pearls");
   args: typeof import("../../src/args").args;
@@ -171,6 +176,7 @@ export async function loadGame(configure?: (tools: Tools) => void): Promise<Game
   const argsModule = await import("../../src/args");
   const organs = await import("../../src/organs");
   const outfit = await import("../../src/outfit");
+  const familiarModule = await import("../../src/familiar");
   const economics = await import("../../src/economics");
   const mood = await import("../../src/mood");
   const fishyModule = await import("../../src/fishy");
@@ -182,6 +188,7 @@ export async function loadGame(configure?: (tools: Tools) => void): Promise<Game
     mood,
     organs,
     outfit,
+    familiarModule,
     fishyModule,
     pearls,
     args: argsModule.args,

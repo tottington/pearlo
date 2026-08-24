@@ -38,10 +38,16 @@ import {
   requiredOrganEquipment,
   setLiverMode,
   wineglassMode,
+  liverMode,
 } from "./organs";
-import { pearlAvoidTerms, pearlOutfitWeights } from "./outfit";
+import {
+  pearlAvoidTerms,
+  pearlForcedEquipment,
+  pearlOutfitWeights,
+  pearlResObjective,
+} from "./outfit";
 import { pearlTasks } from "./pearls";
-import { PEARL_RES_CAP, PEARL_RES_HEADROOM, canBreathUnderwater } from "./zones";
+import { canBreathUnderwater } from "./zones";
 
 export function main(command?: string): void {
   sinceKolmafiaRevision(28100);
@@ -175,20 +181,16 @@ export function main(command?: string): void {
       // damage weights in the expression the maximizer optimizes total score, so a
       // min flag reports FAIL on outfits that trade res for damage even when a
       // pure-res 18 exists. Reachability is the verdict lines' res floor above.
-      const organEquip = args.major.overcapped ? allOrganEquipment() : requiredOrganEquipment();
-      const totemForced = simDrunk && organEquip.includes($item`angelbone totem`);
-      const drunkweapon =
-        simDrunk && !totemForced && have(args.major.drunkweapon)
-          ? `, +equip ${args.major.drunkweapon}`
-          : "";
-      const weaponForced = totemForced || drunkweapon.length > 0;
-      const organEquips = organEquip.map((i) => `, +equip ${i}`).join("");
-      // The same weights and refusals buildPearlOutfit and the profit model use, so the
-      // outfit this prints is the one the run would actually dress.
+      // The same forced slots, weights and refusals buildPearlOutfit and the profit
+      // model use, so the outfit this prints is the one the run would dress.
+      const mode = simDrunk ? "wineglass" : liverMode();
+      const forced = pearlForcedEquipment(p, mode, predictedPlayerAirByEffect).equip;
+      const weaponForced =
+        simDrunk && (forced.includes($item`angelbone totem`) || have(args.major.drunkweapon));
+      const forcedTerms = forced.map((i) => `, +equip ${i}`).join("");
       const expr =
-        `${p.key} res ${PEARL_RES_CAP + PEARL_RES_HEADROOM} max${breathing}${wineglass}` +
-        `${drunkweapon}${organEquips}${pearlOutfitWeights(simDrunk, weaponForced)}` +
-        `${pearlAvoidTerms(p)}`;
+        `${pearlResObjective(p, simDrunk)}${breathing}${wineglass}` +
+        `${forcedTerms}${pearlOutfitWeights(simDrunk, weaponForced)}${pearlAvoidTerms(p)}`;
       const overrideNote = outfitOverride(p.key) !== undefined ? " (ignores zone overrides)" : "";
       print(
         `  recommended equips (as the run would dress)${wineglass ? " (wineglass in off-hand)" : ""}:${overrideNote}`,

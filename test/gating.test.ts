@@ -131,3 +131,26 @@ describe("report paths spend nothing (charter 13)", () => {
     expect(g.state.log.retrieves).toHaveLength(0);
   });
 });
+
+describe("below-cap correction is not latched", () => {
+  it("still re-checks a zone that already settled on the res familiar", async () => {
+    // The zone settles on the res familiar, then a later dress comes in under the cap
+    // because the maximizer picks a different accessory. That must be re-checked, not
+    // warned about for the rest of the zone.
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 18, fishyTurns: 40 });
+      t.familiar("Exotic Parrot", { owned: true });
+      t.playerRes("Cold Resistance", 16);
+    });
+    const cold = g.zones.PEARLS.find((p) => p.key === "cold");
+    if (!cold) throw new Error("no cold spec");
+    g.outfit.setFamiliarMode(cold.key, "switch");
+
+    const task = g.pearls.pearlTasks([cold]).find((x) => x.name === `${cold.loc}`);
+    if (!task?.prepare) throw new Error("no prepare");
+    task.prepare();
+
+    const attempts = g.state.log.prints.filter((line) => line.includes("trying the res familiar"));
+    expect(attempts.length).toBe(1);
+  });
+});

@@ -385,16 +385,101 @@ describe("forced slots in the speculation", () => {
     }
   });
 
-  it("forces exactly what the outfit builder commits", async () => {
+  it("forces exactly the committed list, not a superset", async () => {
+    // The cape case above covers under-forcing. This covers over-forcing: the model
+    // must not reserve a slot the dress leaves to the maximizer.
     const g = await loadGame(capeScenario);
     const stench = spec(g, "stench");
     const forced = g.outfit.pearlForcedEquipment(stench, g.organs.liverMode()).equip;
-    expect(forced.length).toBeGreaterThan(0);
 
     g.economics.zoneVerdict(stench);
     const first = g.state.log.maximizes.filter((m) => m.speculate)[0];
+    const equipTerms = first.modifier.match(/\+equip /g)?.length ?? 0;
+    expect(equipTerms).toBe(forced.length);
     for (const item of forced) {
       expect(first.modifier).toContain(`+equip ${item}`);
     }
+  });
+});
+
+describe("resistance outweighs the outfit's tiebreakers", () => {
+  it("weights resistance above the item term so a slot cannot trade a tier away", async () => {
+    // A +3 resistance accessory scored 3.0 while a +25% item one scored 2.5 under
+    // "0.1 item", so the slot flipped between fights and the zone farmed a tier low.
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 18, fishyTurns: 40 });
+    });
+    g.economics.zoneVerdict(spec(g, "cold"));
+
+    const speculative = g.state.log.maximizes.filter((m) => m.speculate);
+    expect(speculative.length).toBeGreaterThan(0);
+    for (const { modifier } of speculative) {
+      const weight = Number(modifier.match(/^([\d.]+) cold res/)?.[1]);
+      const item = Number(modifier.match(/([\d.]+) item/)?.[1] ?? 0);
+      expect(weight).toBeGreaterThan(0);
+      // One resistance point must beat the item drop a single accessory can carry.
+      expect(weight).toBeGreaterThan(item * 25);
+    }
+  });
+
+  it("keeps damage able to outbid resistance while overdrunk", async () => {
+    // Attack-only combat aborts unless the weapon one-shots, so resistance must not
+    // dominate the weapon-damage terms there.
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 18, fishyTurns: 40 });
+      t.state.inebriety = 16;
+      t.item("Drunkula's wineglass", { count: 1 });
+    });
+    const objective = g.outfit.pearlResObjective(spec(g, "cold"), true);
+    expect(objective.startsWith("1 cold res")).toBe(true);
+  });
+});
+
+describe("forced gear must be wearable and match the dress", () => {
+  it("does not price a zone at zero because owned gear is restricted out", async () => {
+    // The speculation drops a configuration whose forced gear cannot be equipped. An
+    // owned-but-Standard-restricted cape would zero the zone and gate it out entirely.
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 18, fishyTurns: 40 });
+      t.item("unwrapped knock-off retro superhero cape", { count: 1, canEquip: false });
+      t.active("Really Deep Breath", 50);
+    });
+    const v = g.economics.zoneVerdict(spec(g, "cold"));
+    expect(v.res).toBe(18);
+    expect(v.go).toBe(true);
+  });
+
+  it("leaves the back slot free when air needs it, in the model as in the dress", async () => {
+    // The dress reads current air; the model prices before the breathing task runs and
+    // must read predicted air, or the two disagree about who owns the back slot.
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 18, fishyTurns: 40 });
+      t.item("unwrapped knock-off retro superhero cape", { count: 1 });
+      t.item("ballast turtle", { count: 1 });
+    });
+    g.economics.zoneVerdict(spec(g, "cold"));
+    const speculative = g.state.log.maximizes.filter((m) => m.speculate);
+    const forced = g.outfit.pearlForcedEquipment(
+      spec(g, "cold"),
+      g.organs.liverMode(),
+      g.familiarModule.predictedPlayerAirByEffect,
+    ).equip;
+    const capeForced = forced.some((i) => `${i}`.includes("retro superhero cape"));
+    for (const { modifier } of speculative) {
+      expect(modifier.includes("+equip unwrapped knock-off retro superhero cape")).toBe(capeForced);
+    }
+  });
+});
+
+describe("outfit-override pieces still pass the avoid filter", () => {
+  it("does not force an avoided piece into the outfit", async () => {
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 18, fishyTurns: 40 });
+      t.item("broken champagne bottle", { count: 1 });
+    });
+    const cold = spec(g, "cold");
+    const forced = g.outfit.pearlForcedEquipment(cold, g.organs.liverMode()).equip;
+    const names = forced.map((i) => `${i}`);
+    expect(names).not.toContain("broken champagne bottle");
   });
 });

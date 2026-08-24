@@ -45,10 +45,14 @@ import {
   liverMode,
   wineglassMode,
 } from "./organs";
-import { pearlAvoidTerms, pearlForcedEquipment, pearlOutfitWeights } from "./outfit";
+import {
+  pearlAvoidTerms,
+  pearlForcedEquipment,
+  pearlOutfitWeights,
+  pearlResObjective,
+} from "./outfit";
 import {
   PEARL_RES_CAP,
-  PEARL_RES_HEADROOM,
   PearlKey,
   PearlSpec,
   familiarWaterBreathingEquipment,
@@ -287,14 +291,14 @@ function speculativeResFloor(
     const airByEffect = predictedPlayerAirByEffect();
     const playerBreathing = airByEffect ? "" : ", adventure underwater";
     const playerFlags = airByEffect ? [] : ["Adventure Underwater"];
-    const target = PEARL_RES_CAP + PEARL_RES_HEADROOM;
+    const resObjective = pearlResObjective(spec, wineglass);
 
     const capped = (res: number) => Math.min(res, PEARL_RES_CAP);
 
     if (familiar === undefined) {
       useFamiliar($familiar.none);
       const free = speculativeRes(
-        `${spec.key} res ${target} max${playerBreathing}${equips}`,
+        `${resObjective}${playerBreathing}${equips}`,
         spec,
         forceEquip,
         playerFlags,
@@ -305,7 +309,7 @@ function speculativeResFloor(
       if (switches.length > 0) {
         const familiarBreathing = airByEffect ? ", underwater familiar" : ", sea";
         const switched = speculativeRes(
-          `${spec.key} res ${target} max${familiarBreathing}${equips}, ${switches}`,
+          `${resObjective}${familiarBreathing}${equips}, ${switches}`,
           spec,
           forceEquip,
           [...playerFlags, "Underwater Familiar"],
@@ -319,7 +323,7 @@ function speculativeResFloor(
     const familiarNeedsGear = !familiarBreathesFree() && !familiar.underwater;
     const familiarBreathing = familiarNeedsGear ? ", underwater familiar" : "";
     const pinned = speculativeRes(
-      `${spec.key} res ${target} max${playerBreathing}${familiarBreathing}${equips}`,
+      `${resObjective}${playerBreathing}${familiarBreathing}${equips}`,
       spec,
       forceEquip,
       familiarNeedsGear ? [...playerFlags, "Underwater Familiar"] : playerFlags,
@@ -635,11 +639,15 @@ function costZone(
 
 function evaluateZone(spec: PearlSpec, mode: LiverMode, budget: FishyBudget): ZoneEconomics {
   const wineglass = mode === "wineglass";
-  // Exactly the slots the real dress commits: organ extenders, the wineglass and
-  // drunkweapon, the lantern gear, the cape's back slot, and an override's own pieces.
+  // The slots the real dress commits: organ extenders, the wineglass and drunkweapon,
+  // the lantern gear and the cape's back slot, plus an override's own pieces.
   // Speculating with any of them free reports resistance the run cannot reach.
-  const equips = pearlForcedEquipment(spec, mode).equip;
+  // Predicted air, not current: this prices before the breathing task runs, and whether
+  // the back slot goes to the cape or to a SCUBA tank follows from it.
+  const equips = pearlForcedEquipment(spec, mode, predictedPlayerAirByEffect).equip;
   const outfitName = outfitOverride(spec.key);
+  const overridePieces = outfitName !== undefined ? outfitPieces(outfitName) : [];
+  equips.push(...overridePieces);
   const familiar = mode === "stooper" ? $familiar`Stooper` : familiarOverride(spec.key);
 
   // speculativeResFloor lets the maximizer fill outfit-free slots with res gear and
