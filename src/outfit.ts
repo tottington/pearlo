@@ -127,15 +127,15 @@ export function pearlResObjective(spec: PearlSpec, overdrunk: boolean): string {
 }
 
 /**
- * The non-resistance weights the dress carries, shared with the profit model so both
- * optimize the same thing. Overdrunk chases the one-shot floor instead: 'effective'
- * (weapon class matched to the better attack stat) only applies when NO weapon is
- * forced, since it could contradict the drunkweapon's class and fail every combination.
+ * The non-resistance weights, shared with the profit model so the dress and the estimate
+ * optimize the same thing. No item-drop weight: `costZone` prices no item income.
+ * Overdrunk chases the one-shot floor; 'effective' applies only when no weapon is forced,
+ * since it could contradict the drunkweapon's class and fail every combination.
  */
 export function pearlOutfitWeights(overdrunk: boolean, weaponForced: boolean): string {
   const combat = overdrunk
     ? `${weaponForced ? "" : ", effective"}, 0.2 weapon damage, 0.2 weapon damage percent`
-    : ", 0.1 item";
+    : "";
   return `, 0.05 hp regen, 0.05 mp regen${combat}`;
 }
 
