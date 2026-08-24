@@ -140,7 +140,7 @@ describe("below-cap correction is not latched", () => {
     const g = await loadGame((t) => {
       standardScenario(t, { res: 18, fishyTurns: 40 });
       t.familiar("Exotic Parrot", { owned: true });
-      t.playerRes("Cold Resistance", 16);
+      t.playerRes("cold", 15);
     });
     const cold = g.zones.PEARLS.find((p) => p.key === "cold");
     if (!cold) throw new Error("no cold spec");
@@ -150,7 +150,13 @@ describe("below-cap correction is not latched", () => {
     if (!task?.prepare) throw new Error("no prepare");
     task.prepare();
 
-    const attempts = g.state.log.prints.filter((line) => line.includes("trying the res familiar"));
+    const attempts = g.state.log.prints.filter((line) => line.includes("— trying "));
     expect(attempts.length).toBe(1);
+    // A settled zone compares against the OTHER mode. Re-dressing the mode it is
+    // already in measures the same number and then "reverts" to the loser.
+    expect(attempts[0]).toContain("trying utility");
+    // And the loser must not be adopted: utility measured no better, so the zone stays
+    // on the mode it had settled into.
+    expect(g.outfit.familiarModeFor(cold.key)).toBe("switch");
   });
 });

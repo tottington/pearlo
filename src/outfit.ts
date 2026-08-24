@@ -117,16 +117,6 @@ export function capeMode(spec: PearlSpec): "kill" | "hold" {
 }
 
 /**
- * The non-resistance weights the real dress carries. Exported so the profit model can
- * speculate the same expression: a maximize for pure resistance reaches a higher figure
- * than the outfit the run actually wears, and pricing a zone on gear it will not dress
- * makes it under-buy and farm a tier below its estimate.
- *
- * Overdrunk chases the one-shot floor instead. 'effective' (weapon class matched to the
- * better attack stat) only applies when NO weapon is forced — it could contradict the
- * configured drunkweapon's class and fail every combination.
- */
-/**
  * The resistance objective, weighted so no tiebreaker can trade a resistance point away
  * below the cap. Overdrunk keeps weight 1: attack-only combat aborts unless the weapon
  * one-shots, so damage must stay able to outbid resistance there.
@@ -136,6 +126,12 @@ export function pearlResObjective(spec: PearlSpec, overdrunk: boolean): string {
   return `${weight} ${spec.key} res ${PEARL_RES_CAP + PEARL_RES_HEADROOM} max`;
 }
 
+/**
+ * The non-resistance weights the dress carries, shared with the profit model so both
+ * optimize the same thing. Overdrunk chases the one-shot floor instead: 'effective'
+ * (weapon class matched to the better attack stat) only applies when NO weapon is
+ * forced, since it could contradict the drunkweapon's class and fail every combination.
+ */
 export function pearlOutfitWeights(overdrunk: boolean, weaponForced: boolean): string {
   const combat = overdrunk
     ? `${weaponForced ? "" : ", effective"}, 0.2 weapon damage, 0.2 weapon damage percent`
@@ -190,7 +186,7 @@ export function pearlForcedEquipment(
       Number.isFinite(needed) ? needed : Infinity,
       accessoryBudget,
     );
-    equip.push(...lanterns.equip.filter((i) => canEquip(i)));
+    equip.push(...lanterns.equip);
     secondLantern = lanterns.secondOffhand;
     // canEquip as well as have: the speculation drops a configuration whose forced gear
     // cannot be worn, so an owned-but-restricted cape would price the zone at zero.
@@ -217,13 +213,10 @@ export function buildPearlOutfit(spec: PearlSpec, familiarMode?: FamiliarMode): 
 
   const modes: Modes = {};
   if (outfitName === undefined && have($item`Jurassic Parka`)) modes.parka = spec.parkaMode;
-  if (
-    !overdrunk &&
-    outfitName === undefined &&
-    have($item`unwrapped knock-off retro superhero cape`) &&
-    !backSlotNeededForAir()
-  ) {
-    equip.push($item`unwrapped knock-off retro superhero cape`);
+  // The helper already decided the cape's slot; re-deciding here is how the model and
+  // the dress drifted apart, and an ungated push would force gear canEquip rejects.
+  if (forced.equip.includes(cape)) {
+    equip.push(cape);
     modes.retrocape = ["heck", capeMode(spec)];
   }
 

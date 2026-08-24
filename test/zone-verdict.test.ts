@@ -472,14 +472,61 @@ describe("forced gear must be wearable and match the dress", () => {
 });
 
 describe("outfit-override pieces still pass the avoid filter", () => {
-  it("does not force an avoided piece into the outfit", async () => {
+  async function overrideGame() {
+    const g = await loadGame((t) => standardScenario(t, { res: 18, fishyTurns: 40 }));
+    const bottle = g.item("broken champagne bottle", { count: 1 });
+    const sweatpants = g.item("old sweatpants", { count: 1 });
+    g.state.outfits.set("coldfit", [bottle, sweatpants]);
+    g.args.overrides.coldoutfit = "coldfit";
+    return g;
+  }
+
+  it("leaves override pieces to the caller, which filters the avoided ones", async () => {
+    // The helper must not pre-load them: buildPearlOutfit owns the avoid filter, and a
+    // forced avoided piece would be worn while the log claimed it was dropped.
+    const g = await overrideGame();
+    const forced = g.outfit.pearlForcedEquipment(spec(g, "cold"), g.organs.liverMode()).equip;
+    const names = forced.map((i) => `${i}`);
+    expect(names).not.toContain("broken champagne bottle");
+    expect(names).not.toContain("old sweatpants");
+  });
+
+  it("keeps the avoided piece out of the dressed outfit", async () => {
+    const g = await overrideGame();
+    const built = g.outfit.buildPearlOutfit(spec(g, "cold"));
+    const names = (built.equip ?? []).map((i) => `${i}`);
+    expect(names).toContain("old sweatpants");
+    expect(names).not.toContain("broken champagne bottle");
+  });
+});
+
+describe("the dressed outfit carries the same objective as the model", () => {
+  it("weights resistance in buildPearlOutfit's own modifier", async () => {
+    // The model's expression is asserted elsewhere; this pins the one the run dresses
+    // with, which is the string that actually decides the accessory slot.
+    const g = await loadGame((t) => standardScenario(t, { res: 18, fishyTurns: 40 }));
+    const built = g.outfit.buildPearlOutfit(spec(g, "cold"));
+    const modifier = Array.isArray(built.modifier)
+      ? built.modifier.join(", ")
+      : (built.modifier ?? "");
+    const weight = Number(modifier.match(/([\d.]+) cold res/)?.[1]);
+    const item = Number(modifier.match(/([\d.]+) item/)?.[1] ?? 0);
+    expect(weight).toBeGreaterThan(item * 25);
+  });
+
+  it("does not force a cape it cannot equip, in the dress as in the model", async () => {
+    // The model drops a configuration whose forced gear cannot be worn. If the dress
+    // forced it anyway, grimoire would throw on a zone the model had just approved.
     const g = await loadGame((t) => {
       standardScenario(t, { res: 18, fishyTurns: 40 });
-      t.item("broken champagne bottle", { count: 1 });
+      t.item("unwrapped knock-off retro superhero cape", { count: 1, canEquip: false });
+      t.active("Really Deep Breath", 50);
     });
     const cold = spec(g, "cold");
     const forced = g.outfit.pearlForcedEquipment(cold, g.organs.liverMode()).equip;
-    const names = forced.map((i) => `${i}`);
-    expect(names).not.toContain("broken champagne bottle");
+    const built = g.outfit.buildPearlOutfit(cold);
+    const dressed = (built.equip ?? []).map((i) => `${i}`);
+    expect(forced.map((i) => `${i}`)).not.toContain("unwrapped knock-off retro superhero cape");
+    expect(dressed).not.toContain("unwrapped knock-off retro superhero cape");
   });
 });

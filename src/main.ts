@@ -156,7 +156,7 @@ export function main(command?: string): void {
     const breathing = predictedPlayerAirByEffect() ? "" : ", adventure underwater";
     // Only force the wineglass into the speculation when it is actually reachable —
     // otherwise every combination FAILs on the +equip and the res verdict is garbage.
-    const wineglass = simDrunk && wineglassAccessible() ? ", +equip Drunkula's wineglass" : "";
+    const glassReachable = !simDrunk || wineglassAccessible();
     for (const p of selected) {
       print(` --- ${p.key} (${p.loc}) ---`, "blue");
       print(`  canAdventure: ${canAdventure(p.loc)}`);
@@ -184,16 +184,20 @@ export function main(command?: string): void {
       // The same forced slots, weights and refusals buildPearlOutfit and the profit
       // model use, so the outfit this prints is the one the run would dress.
       const mode = simDrunk ? "wineglass" : liverMode();
-      const forced = pearlForcedEquipment(p, mode, predictedPlayerAirByEffect).equip;
+      // A closeted wineglass would make every combination fail the +equip, so leave it
+      // out of the expression rather than print garbage.
+      const forced = pearlForcedEquipment(p, mode, predictedPlayerAirByEffect).equip.filter(
+        (i) => glassReachable || i !== $item`Drunkula's wineglass`,
+      );
       const weaponForced =
         simDrunk && (forced.includes($item`angelbone totem`) || have(args.major.drunkweapon));
       const forcedTerms = forced.map((i) => `, +equip ${i}`).join("");
       const expr =
-        `${pearlResObjective(p, simDrunk)}${breathing}${wineglass}` +
+        `${pearlResObjective(p, simDrunk)}${breathing}` +
         `${forcedTerms}${pearlOutfitWeights(simDrunk, weaponForced)}${pearlAvoidTerms(p)}`;
       const overrideNote = outfitOverride(p.key) !== undefined ? " (ignores zone overrides)" : "";
       print(
-        `  recommended equips (as the run would dress)${wineglass ? " (wineglass in off-hand)" : ""}:${overrideNote}`,
+        `  recommended equips (as the run would dress)${simDrunk && glassReachable ? " (wineglass in off-hand)" : ""}:${overrideNote}`,
         "blue",
       );
       for (const boost of maximize(expr, 0, 0, true, true)) {
