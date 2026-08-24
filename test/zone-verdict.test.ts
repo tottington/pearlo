@@ -405,10 +405,43 @@ describe("forced slots in the speculation", () => {
   });
 });
 
+/** Mean of the 12-15 HP/MP regen roll the maximizer scores a regen accessory on. */
+const REGEN_MEAN = 13.5;
+/** Peridot of Peril's score under the 0.05 regen weights: the bar resistance must clear. */
+const REGEN_ACCESSORY_SCORE = 1.35;
+
+/** The expression's weight terms. Equipment names are not weights, so they are dropped. */
+function weightTerms(modifier: string): string {
+  return modifier
+    .split(",")
+    .map((t) => t.trim())
+    .filter((t) => !/equip/i.test(t))
+    .join(", ");
+}
+
+/** No item-drop weight in any comma-separated term, whatever the casing. */
+function expectNoItemWeight(modifier: string): void {
+  expect(weightTerms(modifier)).not.toMatch(/\bitem\b/i);
+}
+
+/**
+ * Pins the objective's shape: no item weight, and one resistance point weighted above the
+ * regen score a single accessory carries. The floor is absolute as well as relative, so
+ * deleting the tiebreakers cannot make the bound vacuous.
+ */
+function expectResistanceDominates(modifier: string, key = "cold"): void {
+  expectNoItemWeight(modifier);
+  const terms = weightTerms(modifier);
+  const weight = Number(terms.match(new RegExp(`(?:^|,\\s*)([\\d.]+) ${key} res`))?.[1]);
+  const tiebreakers = [
+    ...terms.matchAll(new RegExp(`(?:^|,\\s*)([\\d.]+)\\s+(?!${key} res)`, "g")),
+  ].map((m) => Number(m[1]));
+  const carried = tiebreakers.reduce((a, b) => a + b, 0) * REGEN_MEAN;
+  expect(weight).toBeGreaterThan(Math.max(REGEN_ACCESSORY_SCORE, carried));
+}
+
 describe("resistance outweighs the outfit's tiebreakers", () => {
-  it("weights resistance above the item term so a slot cannot trade a tier away", async () => {
-    // A +3 resistance accessory scored 3.0 while a +25% item one scored 2.5 under
-    // "0.1 item", so the slot flipped between fights and the zone farmed a tier low.
+  it("carries no item weight and keeps resistance above a regen accessory", async () => {
     const g = await loadGame((t) => {
       standardScenario(t, { res: 18, fishyTurns: 40 });
     });
@@ -417,11 +450,7 @@ describe("resistance outweighs the outfit's tiebreakers", () => {
     const speculative = g.state.log.maximizes.filter((m) => m.speculate);
     expect(speculative.length).toBeGreaterThan(0);
     for (const { modifier } of speculative) {
-      const weight = Number(modifier.match(/^([\d.]+) cold res/)?.[1]);
-      const item = Number(modifier.match(/([\d.]+) item/)?.[1] ?? 0);
-      expect(weight).toBeGreaterThan(0);
-      // One resistance point must beat the item drop a single accessory can carry.
-      expect(weight).toBeGreaterThan(item * 25);
+      expectResistanceDominates(modifier);
     }
   });
 
@@ -435,6 +464,9 @@ describe("resistance outweighs the outfit's tiebreakers", () => {
     });
     const objective = g.outfit.pearlResObjective(spec(g, "cold"), true);
     expect(objective.startsWith("1 cold res")).toBe(true);
+    // Neither overdrunk arm may carry an item weight either.
+    expectNoItemWeight(objective + g.outfit.pearlOutfitWeights(true, false));
+    expectNoItemWeight(objective + g.outfit.pearlOutfitWeights(true, true));
   });
 });
 
@@ -511,9 +543,7 @@ describe("the dressed outfit carries the same objective as the model", () => {
     const modifier = Array.isArray(built.modifier)
       ? built.modifier.join(", ")
       : (built.modifier ?? "");
-    const weight = Number(modifier.match(/([\d.]+) cold res/)?.[1]);
-    const item = Number(modifier.match(/([\d.]+) item/)?.[1] ?? 0);
-    expect(weight).toBeGreaterThan(item * 25);
+    expectResistanceDominates(modifier);
   });
 
   it("does not force a cape it cannot equip, in the dress as in the model", async () => {

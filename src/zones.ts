@@ -62,15 +62,14 @@ export const PEARL_RES_CAP = 18;
 /**
  * Resistance to chase beyond the cap. The buffs are cast before the maximizer runs, so
  * without headroom it stops at exactly 18 and a lapsing buff (Feel Peaceful is 3/day)
- * drops a progress tier. Covers that lapse for roughly one slot of item drop.
+ * drops a progress tier. Three points absorbs a +2 buff lapsing without falling below.
  */
 export const PEARL_RES_HEADROOM = 3;
 
 /**
- * How hard the outfit chases resistance relative to its tiebreakers. At weight 1 a
- * single +25% item accessory (2.5 points under `0.1 item`) outscored a +3 resistance
- * one, so the slot flipped between fights and the zone farmed a tier low. Resistance is
- * the point of the outfit; the regen and item terms are only meant to break ties.
+ * How hard the outfit chases resistance relative to its tiebreakers. A regen accessory
+ * (Peridot of Peril, 12-15 HP and MP) scores ~1.35 under the 0.05 regen weights, so the
+ * margin has to stay wide enough that it cannot outbid a single resistance point.
  */
 export const PEARL_RES_WEIGHT = 3;
 
@@ -100,11 +99,9 @@ export type PearlSpec = {
   choices?: { [id: number]: number };
   /**
    * Monster to pick when the Peridot of Peril's "Peering Through Your Peridot" NC
-   * (choice 1557) fires — first adventure of the day per zone with the Peridot
-   * equipped; selection enters that combat immediately, no turn lost. The maximizer
-   * likes the Peridot (+15% item, HP/MP regen match the outfit tie-breaker weights),
-   * so the NC WILL fire; unanswered it halts the script. Picks are the zone's safest
-   * monster per docs/sea-reference.md §3.
+   * (choice 1557) fires — first adventure of the day per zone with the Peridot equipped.
+   * Selection enters that combat immediately, no turn lost; unanswered it halts the
+   * script. Picks are the zone's safest monster per docs/sea-reference.md §3.
    */
   peridotMonster: Monster;
   /** Highest monster HP in the zone (docs/sea-reference.md §3) — the one-shot target. */
