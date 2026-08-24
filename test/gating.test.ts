@@ -131,3 +131,48 @@ describe("report paths spend nothing (charter 13)", () => {
     expect(g.state.log.retrieves).toHaveLength(0);
   });
 });
+
+describe("familiar-mode escalation", () => {
+  // The dress decides what the player measures: the switch build reaches 19, utility 16.
+  async function zoneWhere(switchRes: number, utilityRes: number) {
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 18, fishyTurns: 40 });
+      t.familiar("Exotic Parrot", { owned: true });
+      t.playerRes("cold", utilityRes);
+      t.onDress((modifier) => {
+        t.playerRes("cold", modifier.includes("switch") ? switchRes : utilityRes);
+      });
+    });
+    const cold = g.zones.PEARLS.find((p) => p.key === "cold");
+    if (!cold) throw new Error("no cold spec");
+    const task = g.pearls.pearlTasks([cold]).find((x) => x.name === `${cold.loc}`);
+    if (!task?.prepare) throw new Error("no prepare");
+    return { g, cold, prepare: task.prepare.bind(task) };
+  }
+
+  it("adopts the res familiar when it measures better", async () => {
+    const { g, cold, prepare } = await zoneWhere(19, 16);
+    prepare();
+    expect(g.outfit.familiarModeFor(cold.key)).toBe("switch");
+  });
+
+  it("keeps the build it is in when the alternative is no better", async () => {
+    const { g, cold, prepare } = await zoneWhere(16, 16);
+    prepare();
+    expect(g.outfit.familiarModeFor(cold.key)).toBe("utility");
+  });
+
+  it("tries each direction at most once, so a settled zone stops re-dressing", async () => {
+    // Both builds stay under the cap, so the short-circuit at the top never fires and
+    // the latch is what has to stop the re-dressing.
+    const { g, prepare } = await zoneWhere(17, 16);
+    prepare();
+    const afterFirst = g.state.log.prints.filter((l) => l.includes("— trying ")).length;
+    prepare();
+    prepare();
+    const total = g.state.log.prints.filter((l) => l.includes("— trying ")).length;
+    // One attempt toward switch, then at most one back toward utility. Never per-fight.
+    expect(afterFirst).toBe(1);
+    expect(total).toBeLessThanOrEqual(2);
+  });
+});

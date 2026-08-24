@@ -27,7 +27,12 @@ import { $effect, $familiar, $item, $skill, $stat, get, have, maxBy, sum } from 
 import { args, familiarOverride, outfitOverride } from "./args";
 import { DamagePlan, damagePlan, wineglassAccessible } from "./combat";
 import { familiarBreathesFree, predictedPlayerAirByEffect, resFamiliarSwitches } from "./familiar";
-import { FISHY_PIPE_TURNS, HAGGLING_FISHY_TURNS, luckyRefreshCosts } from "./fishy";
+import {
+  FISHY_PIPE_TURNS,
+  HAGGLING_FISHY_TURNS,
+  luckyRefreshCosts,
+  refreshNetTurns,
+} from "./fishy";
 import { resItems, uncastResBuffBonus } from "./mood";
 import {
   LiverMode,
@@ -40,10 +45,14 @@ import {
   liverMode,
   wineglassMode,
 } from "./organs";
-import { pearlAvoidTerms, pearlOutfitWeights } from "./outfit";
+import {
+  pearlAvoidTerms,
+  pearlForcedEquipment,
+  pearlOutfitWeights,
+  pearlResObjective,
+} from "./outfit";
 import {
   PEARL_RES_CAP,
-  PEARL_RES_HEADROOM,
   PearlKey,
   PearlSpec,
   familiarWaterBreathingEquipment,
@@ -282,14 +291,14 @@ function speculativeResFloor(
     const airByEffect = predictedPlayerAirByEffect();
     const playerBreathing = airByEffect ? "" : ", adventure underwater";
     const playerFlags = airByEffect ? [] : ["Adventure Underwater"];
-    const target = PEARL_RES_CAP + PEARL_RES_HEADROOM;
+    const resObjective = pearlResObjective(spec, wineglass);
 
     const capped = (res: number) => Math.min(res, PEARL_RES_CAP);
 
     if (familiar === undefined) {
       useFamiliar($familiar.none);
       const free = speculativeRes(
-        `${spec.key} res ${target} max${playerBreathing}${equips}`,
+        `${resObjective}${playerBreathing}${equips}`,
         spec,
         forceEquip,
         playerFlags,
@@ -300,7 +309,7 @@ function speculativeResFloor(
       if (switches.length > 0) {
         const familiarBreathing = airByEffect ? ", underwater familiar" : ", sea";
         const switched = speculativeRes(
-          `${spec.key} res ${target} max${familiarBreathing}${equips}, ${switches}`,
+          `${resObjective}${familiarBreathing}${equips}, ${switches}`,
           spec,
           forceEquip,
           [...playerFlags, "Underwater Familiar"],
@@ -314,7 +323,7 @@ function speculativeResFloor(
     const familiarNeedsGear = !familiarBreathesFree() && !familiar.underwater;
     const familiarBreathing = familiarNeedsGear ? ", underwater familiar" : "";
     const pinned = speculativeRes(
-      `${spec.key} res ${target} max${playerBreathing}${familiarBreathing}${equips}`,
+      `${resObjective}${playerBreathing}${familiarBreathing}${equips}`,
       spec,
       forceEquip,
       familiarNeedsGear ? [...playerFlags, "Underwater Familiar"] : playerFlags,
@@ -404,7 +413,7 @@ export function candidateResPlans(
   startRes: number,
   remainingPct: number,
   reserved: Map<Item, number>,
-  carried: Effect[] = [],
+  covered: Effect[] = [],
   // The zone's adventures at a given resistance. evaluateZone passes its threaded
   // figure; the default is the executor's live-pool arithmetic.
   turnsNeeded: (res: number) => number = (res) =>
@@ -418,10 +427,11 @@ export function candidateResPlans(
   for (const it of resItems(spec.key)) {
     // Must grant an effect: an item whose resistance comes from wearing it would be
     // "used" to no effect and re-planned, and re-bought, every fight.
-    // Skip anything already running, or that an earlier zone's stack still covers —
-    // buying a second source of the same effect buys no resistance.
+    // Skip only what is covered for the whole zone. An effect running now but expiring
+    // part-way through is not: it needs a re-up in the plan, or nothing can restore the
+    // tier when it lapses mid-farm.
     const ef = effectModifier(it, "Effect");
-    if (ef === $effect.none || have(ef) || carried.includes(ef)) continue;
+    if (ef === $effect.none || covered.includes(ef)) continue;
     const gain = numericModifier(ef, resName);
     if (gain > 0) gains.set(it, gain);
   }
@@ -549,6 +559,24 @@ type ZoneCosting = {
 };
 
 /**
+ * The zone's res effects that are running now, split by whether they outlast it. An
+ * expiring one is in the measured resistance but will not be there for the whole run,
+ * so it is discounted from the estimate and left available to be planned as a re-up.
+ */
+function activeResEffects(
+  spec: PearlSpec,
+  zoneTurns: number,
+): { lasting: Effect[]; expiring: Effect[] } {
+  const lasting: Effect[] = [];
+  const expiring: Effect[] = [];
+  for (const ef of new Set(resItems(spec.key).map((it) => effectModifier(it, "Effect")))) {
+    if (ef === $effect.none || !have(ef)) continue;
+    (haveEffect(ef) >= zoneTurns ? lasting : expiring).push(ef);
+  }
+  return { lasting, expiring };
+}
+
+/**
  * Price a zone at a given resistance. Takes the Fishy budget by value so an option can
  * be costed without spending it, which is what lets the potion decision be made by this
  * same model rather than by a cheaper approximation of it standing outside.
@@ -578,9 +606,7 @@ function costZone(
   let fishyUsed = Math.min(fights, pool);
   while (fishyUsed < fights && refreshCosts.length > 0) {
     const meat = refreshCosts[0];
-    const coverable = Math.min(HAGGLING_FISHY_TURNS - 1, fights - fishyUsed);
-    // Each covered fight saves one turn; the trip costs one — net (coverable-1) turns.
-    if ((coverable - 1) * args.major.voa < meat) break;
+    if (refreshNetTurns(fights - fishyUsed) * args.major.voa < meat) break;
     refreshCosts.shift();
     refreshesUsed += 1;
     refreshCost += meat;
@@ -613,20 +639,12 @@ function costZone(
 
 function evaluateZone(spec: PearlSpec, mode: LiverMode, budget: FishyBudget): ZoneEconomics {
   const wineglass = mode === "wineglass";
-  const forced = args.major.overcapped ? allOrganEquipment(mode) : requiredOrganEquipment(mode);
-  const equips = [...forced];
-  if (wineglass) {
-    equips.push($item`Drunkula's wineglass`);
-    // Mirror the real outfit: the drunkweapon takes the weapon slot unless the totem
-    // forces it for organ capacity — otherwise this would speculate the weapon slot as
-    // free res space the real dress never gives it.
-    if (!forced.includes($item`angelbone totem`) && have(args.major.drunkweapon)) {
-      equips.push(args.major.drunkweapon);
-    }
-  }
-  // Price overrides as they will run: outfit pieces are forced into the speculation
-  // and an override familiar is pinned exactly like Stooper (skipping the maximizer's
-  // familiar switches). Stooper still displaces the override in stooper mode.
+  // The slots the real dress commits: organ extenders, the wineglass and drunkweapon,
+  // the lantern gear and the cape's back slot, plus an override's own pieces.
+  // Speculating with any of them free reports resistance the run cannot reach.
+  // Predicted air, not current: this prices before the breathing task runs, and whether
+  // the back slot goes to the cape or to a SCUBA tank follows from it.
+  const equips = pearlForcedEquipment(spec, mode, predictedPlayerAirByEffect).equip;
   const outfitName = outfitOverride(spec.key);
   const overridePieces = outfitName !== undefined ? outfitPieces(outfitName) : [];
   equips.push(...overridePieces);
@@ -660,8 +678,21 @@ function evaluateZone(spec: PearlSpec, mode: LiverMode, budget: FishyBudget): Zo
   const resName = resModifierName(spec.key);
   const gearTurns = turnsAt(rawGearRes);
   const carried = budget.carried.filter((c) => c.turnsLeft >= gearTurns);
+  const { lasting, expiring } = activeResEffects(spec, gearTurns);
+  // Each effect counts once. One that is running now is already inside rawGearRes, so
+  // only a carried stack for an effect we do NOT have adds resistance; and an expiring
+  // one is only discounted when no carried stack covers the rest of the zone.
+  const carriedRescues = (ef: Effect) => carried.some((c) => c.effect === ef);
   const gearRes = Math.min(
-    rawGearRes + sum(carried, (c) => numericModifier(c.effect, resName)),
+    rawGearRes +
+      sum(
+        carried.filter((c) => !haveEffect(c.effect)),
+        (c) => numericModifier(c.effect, resName),
+      ) -
+      sum(
+        expiring.filter((ef) => !carriedRescues(ef)),
+        (ef) => numericModifier(ef, resName),
+      ),
     PEARL_RES_CAP,
   );
 
@@ -673,7 +704,7 @@ function evaluateZone(spec: PearlSpec, mode: LiverMode, budget: FishyBudget): Zo
     gearRes,
     remainingPct,
     budget.reserved,
-    carried.map((c) => c.effect),
+    [...carried.map((c) => c.effect), ...lasting],
     turnsAt,
   );
   const gearOnly = costZone(spec, wineglass, exposed, damage, gearRes, 0, remainingPct, budget);

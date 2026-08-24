@@ -61,10 +61,15 @@ export function equippedLanternComponents(): number {
 }
 
 /** Upper bound on lantern components if we equip everything we own (planning pass). */
+/** Owned and wearable: the one-shot requirement and the selection must agree. */
+function usableLantern(item: Item): boolean {
+  return have(item) && canEquip(item);
+}
+
 export function ownedLanternProspect(): number {
   let n = 0;
   for (const gear of LANTERN_GEAR) {
-    if (have(gear.item)) n += gear.components;
+    if (usableLantern(gear.item)) n += gear.components;
   }
   if (have($item`unwrapped knock-off retro superhero cape`)) n += 1;
   return n;
@@ -93,7 +98,7 @@ export function selectLanternGear(needed: number, accessorySlots = 3): LanternSe
   let remaining = needed;
   for (const gear of LANTERN_GEAR) {
     if (remaining <= 0) break;
-    if (!have(gear.item)) continue;
+    if (!usableLantern(gear.item)) continue;
     if (gear.slot === "off-hand") {
       if (offhandsUsed === 0) {
         equip.push(gear.item);
