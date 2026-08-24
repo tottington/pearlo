@@ -69,9 +69,15 @@ type LuckySource = {
   acquire: (remainingFights: number) => boolean;
 };
 
-/** Would a mall clover pay for itself? min(20, remaining fights) turns saved vs price. */
+/**
+ * Would a mall clover pay for itself? Priced on the same terms costZone uses for a
+ * refresh: the trip itself costs a turn, and the block's last turn carries the next
+ * trip, so a refresh covers at most HAGGLING_FISHY_TURNS - 1 fights and nets one fewer
+ * turn than it covers.
+ */
 function mallWorthIt(remainingFights: number, price: number): boolean {
-  return Math.min(HAGGLING_FISHY_TURNS, remainingFights) * args.major.voa >= price;
+  const covered = Math.min(HAGGLING_FISHY_TURNS - 1, remainingFights);
+  return Math.max(0, covered - 1) * args.major.voa >= price;
 }
 
 // Cascade order fixed by user decision (2026-08-12): Lucky!-dedicated daily sources

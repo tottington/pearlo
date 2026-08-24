@@ -59,6 +59,18 @@ export function canBreathUnderwater(): boolean {
 /** Resistance level where pearl progress caps at 10%/fight (docs/sea-reference.md §2). */
 export const PEARL_RES_CAP = 18;
 
+/**
+ * Resistance to chase beyond the cap. The buffs are cast before the maximizer runs, so
+ * without headroom it stops at exactly 18 and a lapsing buff (Feel Peaceful is 3/day)
+ * drops a progress tier. Covers that lapse for roughly one slot of item drop.
+ */
+export const PEARL_RES_HEADROOM = 3;
+
+/** Pearl progress per fight at a given resistance: 1.7% per 3 res, floored, capped at 10%. */
+export function progressRatePct(res: number): number {
+  return Math.max(1.7, Math.min(10, 1.7 * Math.floor(res / 3)));
+}
+
 export type PearlKey = "spooky" | "sleaze" | "hot" | "stench" | "cold";
 
 /** Mafia numeric-modifier name for a pearl element's resistance level. */

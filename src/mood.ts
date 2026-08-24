@@ -6,6 +6,8 @@ import {
   buy,
   cliExecute,
   effectModifier,
+  equippedItem,
+  familiarWeight,
   haveEffect,
   hpCost,
   itemAmount,
@@ -17,6 +19,7 @@ import {
   myMp,
   numericModifier,
   print,
+  weightAdjustment,
   restoreHp,
   restoreMp,
   toItem,
@@ -31,15 +34,20 @@ import {
   $familiars,
   $item,
   $items,
+  $slot,
   get,
+  getSaleValue,
   have,
+  sum,
   uneffect,
+  withProperties,
 } from "libram";
 
 import { args } from "./args";
-import { tryAcquiringEffect } from "./lib";
+import type { ResPotionPlan } from "./economics";
+import { canAcquireEffect, restorerItemSettings, tryAcquiringEffect } from "./lib";
 import { wineglassMode } from "./organs";
-import { PEARL_RES_CAP, PearlKey, PearlSpec, resModifierName } from "./zones";
+import { PEARL_RES_CAP, PearlKey, PearlSpec, progressRatePct, resModifierName } from "./zones";
 
 // Every list below is wiki-verified (effect pages fetched 2026-08-07); the original
 // usefulEffects list mixed genuine resistance with stat/HP/familiar buffs — sorted here.
@@ -124,25 +132,161 @@ const WEIGHT_RES_FAMILIARS = $familiars`Exotic Parrot, Mu`;
 // dollars). Inventory only — free/owned default.
 const FAMILIAR_WEIGHT_POTIONS = $items`temporary teardrop tattoo, sea grease`;
 
-/** Use owned underwater famweight potions while a weight-scaled res familiar is out. */
-function topUpFamiliarWeight(spec: PearlSpec): void {
-  if (!WEIGHT_RES_FAMILIARS.includes(myFamiliar())) return;
+/**
+ * Use owned underwater famweight potions while a weight-scaled res familiar is out —
+ * but only when the resistance the added weight actually buys is worth what the potions
+ * would have sold for. These familiars gain resistance in whole steps of weight, so most
+ * of the time a few pounds buys nothing and the potions were pure waste.
+ */
+export function topUpFamiliarWeight(spec: PearlSpec, worthIt: WorthIt, turnsFor: TurnsFor): void {
+  const familiar = myFamiliar();
+  if (!WEIGHT_RES_FAMILIARS.includes(familiar)) return;
   const resName = resModifierName(spec.key);
-  if (numericModifier(resName) >= PEARL_RES_CAP) return;
-  const need = coverageTurns(spec);
+  const startRes = numericModifier(resName);
+  if (startRes >= PEARL_RES_CAP) return;
+
+  const need = coverageTurns(spec, turnsFor);
+  const planned: { item: Item; copies: number; pounds: number; value: number }[] = [];
   for (const it of FAMILIAR_WEIGHT_POTIONS) {
-    if (numericModifier(resName) >= PEARL_RES_CAP) break;
-    if (itemAmount(it) === 0) continue;
     const ef = effectModifier(it, "Effect");
-    if (ef !== $effect.none && have(ef)) continue;
+    if (ef === $effect.none || have(ef) || itemAmount(it) === 0) continue;
     const duration = Math.max(1, numericModifier(it, "Effect Duration"));
-    use(it, Math.min(itemAmount(it), Math.ceil(need / duration)));
+    const copies = Math.min(itemAmount(it), Math.ceil(need / duration));
+    if (copies <= 0) continue;
+    planned.push({
+      item: it,
+      copies,
+      pounds: numericModifier(ef, "Familiar Weight"),
+      value: copies * getSaleValue(it),
+    });
   }
+  if (planned.length === 0) return;
+
+  // What the extra pounds are worth is the familiar's own step function, so ask it.
+  const equip = equippedItem($slot`familiar`);
+  const weight = familiarWeight(familiar) + weightAdjustment();
+  const pounds = sum(planned, (p) => p.pounds);
+  const gain =
+    numericModifier(familiar, resName, weight + pounds, equip) -
+    numericModifier(familiar, resName, weight, equip);
+  if (gain <= 0) return;
+  if (
+    !worthIt(
+      startRes,
+      gain,
+      sum(planned, (p) => p.value),
+    )
+  )
+    return;
+
+  for (const { item, copies } of planned) use(item, copies);
+}
+
+const implementWarned = new Set<Effect>();
+
+/**
+ * Acquire a buff for MP, never meat (user policy): mafia otherwise buys a skill's
+ * casting implement through retrieveItem. Storage is off too — while either mall or
+ * storage is live mafia stops at the *default* tool and errors out instead of falling
+ * back to a lesser one we own. topUpRes buys potions separately, priced against turns.
+ *
+ * A buff we expected to land and didn't is announced once: silently dropping the
+ * spell-damage songs for want of an accordion would be a large, invisible cost.
+ */
+function acquireEffectFree(ef: Effect): void {
+  const expected = canAcquireEffect(ef);
+  // Buff implements are not budgetable: mafia retrieves the *default* tool of the class
+  // (oil pan, Ouija board) before it will fall back to a lesser one already owned, so
+  // permitting any purchase permits a five-figure one that nothing here priced. Storage
+  // counts as buy-side for the same reason.
+  withProperties(
+    {
+      autoSatisfyWithMall: false,
+      autoSatisfyWithNPCs: false,
+      autoSatisfyWithCoinmasters: false,
+      autoSatisfyWithStorage: false,
+    },
+    () => tryAcquiringEffect(ef),
+  );
+  if (expected && !have(ef) && !implementWarned.has(ef)) {
+    implementWarned.add(ef);
+    print(
+      `pearlo: skipped ${ef} — it needs an implement or MP we don't have, and buffs ` +
+        `never spend meat. Acquire the implement to get this buff back.`,
+      "red",
+    );
+  }
+}
+
+/** The zone's resistance skill-buffs: all-element plus its own partial-element set. */
+function resBuffs(spec: PearlSpec): Effect[] {
+  return [
+    ...ALL_ELEMENT_RES_EFFECTS,
+    ...PARTIAL_RES_EFFECTS.filter(([, elements]) => elements.includes(spec.element)).map(
+      ([ef]) => ef,
+    ),
+  ];
+}
+
+/**
+ * Cast the zone's resistance buffs before the outfit is built, so the maximizer plans
+ * against buffed resistance instead of spending slots to make up the difference.
+ * Repeating is cheap (a have() check each), and pearlMood re-tries anything skipped.
+ */
+export function castFreeResBuffs(spec: PearlSpec): void {
+  const pending = resBuffs(spec).filter((ef) => !have(ef));
+  if (pending.length === 0) return;
+  // Restore first: canAcquireEffect gates casts on current MP, so buffing on a low-MP
+  // entry silently skips them and leaves the maximizer on an unbuffed baseline — the
+  // very ordering this pass exists to fix.
+  const cost = pendingCastCosts(pending);
+  if (myMp() < cost.mp) restoreMp(Math.min(myMaxmp(), cost.mp));
+  if (myHp() <= cost.hp) restoreHp(myMaxhp());
+  for (const ef of pending) acquireEffectFree(ef);
+}
+
+/**
+ * Cast the selected zones' resistance skill-buffs before the profit model prices
+ * anything, so its speculative maximizes measure them instead of predicting them.
+ * Predicting was wrong in three ways at once: Feel Peaceful is 3/day but was credited
+ * to all five zones, a buff whose casting implement we lack was counted and then
+ * skipped, and an over-predicted baseline makes the run under-buy and farm a tier
+ * below what it was priced at.
+ */
+export function castSharedResBuffs(selected: PearlSpec[]): void {
+  const buffs = [...new Set(selected.flatMap(resBuffs))];
+  const pending = buffs.filter((ef) => !have(ef));
+  if (pending.length === 0) return;
+  const cost = pendingCastCosts(pending);
+  // Pre-engine, so the engine's restore policy is not installed yet — never burn a
+  // free rest or an unvetted restorer just to buff.
+  withProperties(restorerItemSettings(), () => {
+    if (myMp() < cost.mp) restoreMp(Math.min(myMaxmp(), cost.mp));
+    if (myHp() <= cost.hp) restoreHp(myMaxhp());
+  });
+  for (const ef of pending) acquireEffectFree(ef);
+}
+
+/** Feel Peaceful is 3/day, and a spent skill still reads castable. */
+function dailyCastsLeft(ef: Effect): boolean {
+  return ef !== $effect`Feeling Peaceful` || get("_feelPeacefulUsed", 0) < 3;
+}
+
+/**
+ * Resistance the report paths are missing: castable res buffs not yet active. The
+ * reports price without casting anything; a real run casts these before pricing.
+ */
+export function uncastResBuffBonus(spec: PearlSpec): number {
+  const resName = resModifierName(spec.key);
+  return sum(
+    resBuffs(spec).filter((ef) => !have(ef) && canAcquireEffect(ef) && dailyCastsLeft(ef)),
+    (ef) => numericModifier(ef, resName),
+  );
 }
 
 /** Per-zone res top-up potions (overrides.<key>resitems), parsed and warned once. */
 const resItemCache = new Map<PearlKey, Item[]>();
-function resItems(key: PearlKey): Item[] {
+export function resItems(key: PearlKey): Item[] {
   const cached = resItemCache.get(key);
   if (cached) return cached;
   const raw = {
@@ -169,6 +313,10 @@ function resItems(key: PearlKey): Item[] {
 }
 
 const resShortfallWarned = new Set<PearlKey>();
+const planShortfallWarned = new Set<PearlKey>();
+
+/** Potions whose purchase failed, per zone: a later zone's mall may well restock. */
+const failedBuy = new Map<PearlKey, Set<Item>>();
 
 // Latched after an unsuccessful Mom visit (not rescued this ascension, not
 // reachable) so later zones don't retry-spam her every prep.
@@ -199,50 +347,169 @@ function tryMomBuff(spec: PearlSpec): void {
 /**
  * Turns of effect needed to finish this pearl: remaining fights at the capped
  * 10%/fight rate, doubled without Fishy (underwater fights cost 2 turns).
- * Padded by 2 adventures of slack: non-fight turns (the zone's Lucky! NC,
- * wandering NCs) burn effect turns without pearl progress, and a potion that
- * expires one fight early drops that fight to 8.3% — a whole extra fight
- * (2026-08-11 Dive Bar: "Razor, Scooter" ate turn 1 of an exactly-10-turn
- * Sleaze-Resistant Trousers stack).
+ * Padded by 2 adventures of slack: non-fight turns (the zone's Lucky! NC, wandering
+ * NCs) burn effect turns without pearl progress. `ratePct` is the progress rate the
+ * caller expects to farm at — resistance potions pass their plan's rate, which is not
+ * always the 10% cap.
  */
-function coverageTurns(spec: PearlSpec): number {
-  const fights = Math.ceil((100 - get(spec.progress, 0)) / 10);
-  return (fights + 2) * (have($effect`Fishy`) ? 1 : 2);
+function coverageTurns(spec: PearlSpec, turnsFor: TurnsFor, ratePct = 10): number {
+  const fights = Math.ceil((100 - get(spec.progress, 0)) / ratePct);
+  // Two adventures of slack for the non-fight turns (the zone's Lucky! NC, wanderers)
+  // that burn effect turns without pearl progress.
+  return turnsFor(fights) + 2;
+}
+
+type PlanItem = {
+  item: Item;
+  effect: Effect;
+  want: number;
+  buyPrice: number;
+  saleValue: number;
+};
+
+/** Asks the profit model whether a resistance step still pays; supplied by pearls.ts. */
+export type WorthIt = (fromRes: number, gain: number, cost: number) => boolean;
+
+/** Converts a fight count to adventures, on the profit model's own arithmetic. */
+export type TurnsFor = (fights: number) => number;
+
+/** Copies of `item` this entry still needs for what the pearl has left to run. */
+function copiesWanted(
+  spec: PearlSpec,
+  item: Item,
+  count: number,
+  ratePct: number,
+  turnsFor: TurnsFor,
+): number {
+  const duration = Math.max(1, numericModifier(item, "Effect Duration"));
+  return Math.min(count, Math.ceil(coverageTurns(spec, turnsFor, ratePct) / duration));
+}
+
+function totalGain(spec: PearlSpec, members: PlanItem[]): number {
+  return sum(members, ({ effect }) => numericModifier(effect, resModifierName(spec.key)));
 }
 
 /**
- * Chew through the zone's configured potion list (strongest first) until
- * dressed res reaches the progress cap. Inventory only by default; with
- * resources.potionprice set, shortfalls are bought from the mall at up to
- * that price per potion. Runs after the skill buffs so free casts count
- * before potions are spent. Each potion is used in bulk — enough copies for
- * the effect to outlast the rest of the pearl — so short-duration potions
- * (powders, marzipan skulls) don't drop a tier on expiry boundaries
- * mid-zone; anything that still expires early is re-upped by the next
- * pre-fight mood pass.
+ * Spend a zone's approved potion plan, all-or-nothing and only while it still pays.
+ *
+ * The plan is a *subset*, because potions that cross no step alone can cross one
+ * together — so drinking part of one is how you pay for a tier you do not get. And it
+ * was costed against a speculative resistance, so the profit test is re-asked against
+ * the resistance actually dressed, through the model that made the original decision.
  */
-function topUpRes(spec: PearlSpec): void {
-  const resName = resModifierName(spec.key);
-  if (numericModifier(resName) >= PEARL_RES_CAP) return;
-  const need = coverageTurns(spec);
-  for (const it of resItems(spec.key)) {
-    if (numericModifier(resName) >= PEARL_RES_CAP) break;
-    const ef = effectModifier(it, "Effect");
-    if (ef !== $effect.none && have(ef)) continue;
-    const duration = Math.max(1, numericModifier(it, "Effect Duration"));
-    const want = Math.ceil(need / duration);
-    if (itemAmount(it) < want && args.resources.potionprice > 0 && it.tradeable) {
-      buy(it, want - itemAmount(it), args.resources.potionprice);
+function executeResPlan(
+  spec: PearlSpec,
+  plan: ResPotionPlan,
+  startRes: number,
+  worthIt: WorthIt,
+  turnsFor: TurnsFor,
+): void {
+  const zoneFailures = failedBuy.get(spec.key) ?? new Set<Item>();
+  const ratePct = progressRatePct(plan.res);
+
+  const pending = plan.use
+    .map(({ item, count, buyPrice, saleValue }) => ({
+      item,
+      buyPrice,
+      saleValue,
+      effect: effectModifier(item, "Effect"),
+      want: copiesWanted(spec, item, count, ratePct, turnsFor),
+    }))
+    .filter(({ effect, want }) => effect !== $effect.none && !have(effect) && want > 0);
+  if (pending.length === 0) return;
+
+  const affordable = ({ item, buyPrice, want }: PlanItem) =>
+    itemAmount(item) >= want ||
+    (item.tradeable &&
+      !zoneFailures.has(item) &&
+      Number.isFinite(buyPrice) &&
+      buyPrice > 0 &&
+      buyPrice <= args.resources.potionprice);
+
+  // Drop what we cannot get before spending anything, then ask the profit model whether
+  // the remainder still pays. Only meat we are about to spend counts: copies already in
+  // inventory were paid for long ago, and re-charging them refuses steps that do pay.
+  const viable = pending.filter(affordable);
+  if (viable.length === 0) return;
+  // A copy on hand is not free: drinking it forfeits what it would have sold for, which
+  // is exactly what the gate charged for it.
+  const ownedBefore = new Map(viable.map(({ item }) => [item, itemAmount(item)]));
+  const spendFor = ({ item, buyPrice, saleValue, want }: PlanItem) => {
+    const owned = Math.min(want, ownedBefore.get(item) ?? 0);
+    const buying = Math.max(0, want - owned);
+    // Guard the multiply: purchaseCost is Infinity for an unpriceable item, and
+    // 0 * Infinity is NaN, which would poison the whole sum and void the plan.
+    return owned * saleValue + (buying > 0 ? buying * buyPrice : 0);
+  };
+  const outlay = sum(viable, spendFor);
+  if (!worthIt(startRes, totalGain(spec, viable), outlay)) return;
+
+  // A partial fill is progress: the copies land, `want` decays as the pearl runs, and
+  // the next pass finishes it. Only a fill that returns nothing is worth remembering —
+  // that is an empty mall, and retrying it every fight is the waste.
+  for (const { item, buyPrice, want } of viable) {
+    const short = want - itemAmount(item);
+    if (short <= 0) continue;
+    if (buy(item, short, Math.ceil(buyPrice)) === 0) {
+      zoneFailures.add(item);
+      failedBuy.set(spec.key, zoneFailures);
     }
-    if (itemAmount(it) === 0) continue;
-    use(it, Math.min(itemAmount(it), want));
   }
+
+  // Drink whatever fully arrived, provided it still crosses a step on its own.
+  const obtained = viable.filter(({ item, want }) => itemAmount(item) >= want);
+  if (obtained.length === 0) return;
+  // The meat is already gone, so the bar here is only that drinking beats not drinking.
+  // Purchases are sunk by now, so only the copies we already had are still forgone —
+  // charging the bought ones again here would refuse what the first test just approved.
+  if (
+    !worthIt(
+      startRes,
+      totalGain(spec, obtained),
+      sum(
+        obtained,
+        ({ item, saleValue, want }) => Math.min(want, ownedBefore.get(item) ?? 0) * saleValue,
+      ),
+    )
+  ) {
+    return;
+  }
+  for (const { item, want } of obtained) use(item, want);
+}
+
+/**
+ * Spend the zone's approved resistance plan. Runs after the skill buffs and the
+ * familiar escalation, so meat only ever covers the tier free resistance did not reach.
+ * Anything that expires mid-pearl is re-upped by the next pre-fight pass.
+ */
+export function topUpRes(
+  spec: PearlSpec,
+  plan: ResPotionPlan,
+  worthIt: WorthIt,
+  turnsFor: TurnsFor,
+): void {
+  const resName = resModifierName(spec.key);
+  const startRes = numericModifier(resName);
+  if (startRes < PEARL_RES_CAP) executeResPlan(spec, plan, startRes, worthIt, turnsFor);
+
   if (numericModifier(resName) < PEARL_RES_CAP) tryMomBuff(spec);
+
+  // The profit gate approved this zone at plan.res. Checked after Mom, which can still
+  // cover the gap; below it, the zone farms under the estimate that approved it.
+  const reached = numericModifier(resName);
+  if (reached < plan.res && !planShortfallWarned.has(spec.key)) {
+    planShortfallWarned.add(spec.key);
+    print(
+      `pearlo: ${spec.key} res reached ${reached}, not the ${plan.res} its potion plan was ` +
+        `priced at — ${spec.loc} will farm below its profit estimate.`,
+      "red",
+    );
+  }
   const finalRes = numericModifier(resName);
   if (finalRes < PEARL_RES_CAP && !resShortfallWarned.has(spec.key)) {
     resShortfallWarned.add(spec.key);
     print(
-      `pearlo: ${spec.key} res is ${finalRes} after the ${spec.key}resitems top-up (< ${PEARL_RES_CAP} cap) — pearl progress runs below 10%/fight. Stock more of the list, extend it, or set potionprice / mombuff for more sources.`,
+      `pearlo: ${spec.key} res is ${finalRes} after the ${spec.key}resitems top-up (< ${PEARL_RES_CAP} cap) — pearl progress runs below 10%/fight. Stock more of the list, extend it, or set mombuff for more sources.`,
       "red",
     );
   }
@@ -281,7 +548,8 @@ function pendingCastCosts(effects: Effect[]): { mp: number; hp: number } {
     if (have(ef) || !ef.default) continue;
     const parts = ef.default.split(" ");
     if (parts[0] !== "cast") continue;
-    const sk = toSkill(parts.slice(2).join(" "));
+    // "cast N Skill ^ Effect" defaults name the granted effect after a caret.
+    const sk = toSkill(parts.slice(2).join(" ").split(" ^ ")[0]);
     if (!have(sk)) continue;
     mp += mpCost(sk);
     hp += hpCost(sk);
@@ -289,7 +557,12 @@ function pendingCastCosts(effects: Effect[]): { mp: number; hp: number } {
   return { mp, hp };
 }
 
-export function pearlMood(spec: PearlSpec, mpPerFight: number): void {
+export function pearlMood(
+  spec: PearlSpec,
+  mpPerFight: number,
+  worthIt: WorthIt,
+  turnsFor: TurnsFor,
+): void {
   // Lucky! converts the next adventure in Lucky-capable zones (Dive Bar: Razor,
   // Scooter; Reef: Dragon the Line) into a noncombat — a turn with no pearl progress
   // (cost us a turn in the 2026-08-07 session). With the luckyfishy refresh enabled
@@ -326,10 +599,10 @@ export function pearlMood(spec: PearlSpec, mpPerFight: number): void {
   if (myMp() < mpTrigger) restoreMp(mpTarget);
   if (myHp() <= pending.hp || myHp() < hpFloor * myMaxhp()) restoreHp(myMaxhp());
 
-  for (const ef of buffs) tryAcquiringEffect(ef);
+  // Non-resistance buffs stay free-only: their value is damage and MP, not turns.
+  for (const ef of buffs) acquireEffectFree(ef);
 
-  topUpFamiliarWeight(spec);
-  topUpRes(spec);
+  topUpFamiliarWeight(spec, worthIt, turnsFor);
 
   // BEFORE adventuring: the buffs spent MP/HP — re-verify the fight buffer.
   // Explicit restores; auto-recovery is disabled by PearloEngine.

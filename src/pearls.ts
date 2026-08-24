@@ -42,18 +42,13 @@ import {
   weaponAttackPlan,
   wineglassAccessible,
 } from "./combat";
-import { zoneVerdict } from "./economics";
-import { pickUtilityFamiliar, playerAirByEffect } from "./familiar";
-import {
-  FISHY_PIPE_TURNS,
-  acquireLucky,
-  luckySourceAvailable,
-  remainingPearlFights,
-} from "./fishy";
+import { resStepWorthIt, turnsForFights, zoneVerdict } from "./economics";
+import { pickUtilityFamiliar, playerAirByEffect, resFamiliarSwitches } from "./familiar";
+import { acquireLucky, luckySourceAvailable, remainingPearlFights } from "./fishy";
 import { abortIfBeatenUp, asdonFualable, fuelUp, handlePostCombatBeatenUp } from "./lib";
-import { pearlMood } from "./mood";
+import { WorthIt, castFreeResBuffs, pearlMood, topUpFamiliarWeight, topUpRes } from "./mood";
 import { wineglassMode } from "./organs";
-import { buildPearlOutfit, familiarPlanPathFor } from "./outfit";
+import { buildPearlOutfit, familiarModeApplies, familiarModeFor, setFamiliarMode } from "./outfit";
 import {
   PEARL_RES_CAP,
   PEARLS,
@@ -61,6 +56,7 @@ import {
   PearlSpec,
   canBreathUnderwater,
   printSeaworthyDebug,
+  progressRatePct,
   resModifierName,
   waterBreathingEquipment,
 } from "./zones";
@@ -72,11 +68,6 @@ function outfitCoversBreathing(spec: PearlSpec): boolean {
   return outfitPieces(name).some(
     (piece) => waterBreathingEquipment.includes(piece) && have(piece) && canEquip(piece),
   );
-}
-
-/** Pearl-progress tier: progress/fight is 1.7% × floor(res/3), capped at 18 res (docs §2). */
-function progressTier(res: number): number {
-  return Math.floor(Math.min(res, PEARL_RES_CAP) / 3);
 }
 
 /**
@@ -93,7 +84,9 @@ function effectAirBuysTier(spec: PearlSpec): boolean {
   const gearRes = numericModifier("Generated:_spec", resModifierName(spec.key));
   maximize(`${spec.key} res ${PEARL_RES_CAP} max`, true);
   const effectRes = numericModifier("Generated:_spec", resModifierName(spec.key));
-  const buys = !gearOk || progressTier(effectRes) > progressTier(gearRes);
+  // Compared on the real rate model: res 0-2 and 3-5 both farm at the 1.7 floor, so a
+  // freed slot that only reaches the first tier buys nothing.
+  const buys = !gearOk || progressRatePct(effectRes) > progressRatePct(gearRes);
   print(
     `[pearlo/airmode] ${spec.key}: gear-air res ${gearRes}${gearOk ? "" : " (air requirement unmet)"} vs effect-air res ${effectRes} → effect air ${buys ? "buys a progress tier" : "buys nothing"}`,
   );
@@ -289,17 +282,78 @@ function turnsNeeded(spec: PearlSpec): number {
   const optimistic = 10; // 1.7 * floor(18/3), capped at 10 — see docs/sea-reference.md
   const rate = observedProgressRate.get(spec.key) ?? optimistic;
   const fights = Math.ceil(remaining / Math.max(1.7, rate));
-  // Fishy coverage the zone can actually count on: active turns plus the unused pipe
-  // pearlMood smokes on the first prepare. Fights beyond that cost 2 turns each —
-  // pricing the whole zone at the CURRENT Fishy state approved zones whose effect
-  // expired mid-pearl, stranding progress at rollover. Lucky! refreshes are
-  // deliberately not counted: Get Fishy preempts zones while sources remain, and
-  // counting them here would approve zones that strand when the cascade comes up dry.
-  const fishyTurns =
-    haveEffect($effect`Fishy`) +
-    (have($item`fishy pipe`) && !get("_fishyPipeUsed") ? FISHY_PIPE_TURNS : 0);
-  const covered = Math.min(fishyTurns, fights);
-  return covered + (fights - covered) * 2;
+  // Lucky! refreshes are deliberately not counted: Get Fishy preempts zones while
+  // sources remain, and counting them here would approve zones that strand when the
+  // cascade comes up dry.
+  return turnsForFights(fights);
+}
+
+/** The profit model's answer to "does this resistance step still pay", for one zone. */
+function worthItFor(spec: PearlSpec): WorthIt {
+  return (fromRes, gain, cost) => resStepWorthIt(spec, fromRes, gain, cost);
+}
+
+/** Zones whose one escalation attempt has already been spent (win or lose). */
+const escalationTried = new Set<PearlKey>();
+
+/** Below-cap fights lose progress, so say so every time — never latch this warning. */
+function warnBelowCap(spec: PearlSpec, res: number): void {
+  print(
+    `pearlo: ${spec.loc} is fighting at ${res} ${spec.key} res (< ${PEARL_RES_CAP} cap) — ` +
+      `${progressRatePct(res).toFixed(1)}%/fight instead of 10%.`,
+    "red",
+  );
+}
+
+/**
+ * Dress-then-verify: measure the real outfit once it is dressed and buffed, and only
+ * then, if it is short of the cap, try the res-familiar build and keep whichever
+ * measures higher. The experiment runs once per zone; the warning does not. Returns
+ * true when it leaves a different build dressed than the mood was sized against.
+ */
+function escalateFamiliarIfShort(spec: PearlSpec): boolean {
+  const res = numericModifier(resModifierName(spec.key));
+  if (res >= PEARL_RES_CAP) return false;
+
+  // A zone that pins its familiar (stooper, familiar override, outfit override) would
+  // rebuild the identical outfit, and with no res familiar owned there is nothing to
+  // switch to — in both cases the dress is pure waste.
+  const canEscalate =
+    familiarModeApplies(spec) &&
+    resFamiliarSwitches(spec).length > 0 &&
+    familiarModeFor(spec.key) !== "switch" &&
+    !escalationTried.has(spec.key);
+  if (!canEscalate) return false;
+  escalationTried.add(spec.key);
+
+  print(
+    `pearlo: ${spec.loc} dressed and buffed to ${res} ${spec.key} res — trying the res familiar`,
+  );
+  Outfit.from(
+    buildPearlOutfit(spec, "switch"),
+    new Error(`pearlo: res-familiar outfit for ${spec.loc} could not be built`),
+  ).dress();
+  // The res familiars scale with weight, and the weight potions are only spent on a
+  // familiar that scales — the mood ran against the utility pick, so top up now or the
+  // candidate is judged up to 15 lbs light.
+  topUpFamiliarWeight(spec, worthItFor(spec), turnsForFights);
+
+  const switched = numericModifier(resModifierName(spec.key));
+  if (switched > res) {
+    setFamiliarMode(spec.key, "switch");
+    print(`pearlo: ${spec.loc} res familiar reaches ${switched} ${spec.key} res — keeping it`);
+    return true;
+  }
+  Outfit.from(
+    buildPearlOutfit(spec, "utility"),
+    new Error(`pearlo: utility outfit for ${spec.loc} could not be built`),
+  ).dress();
+  const reverted = numericModifier(resModifierName(spec.key));
+  print(
+    `pearlo: ${spec.loc} res familiar reached only ${switched} ${spec.key} res — reverted to ` +
+      `the utility build at ${reverted}`,
+  );
+  return false;
 }
 
 function pearlTask(spec: PearlSpec): Task {
@@ -326,27 +380,24 @@ function pearlTask(spec: PearlSpec): Task {
     prepare: () => {
       abortIfBeatenUp(`before adventuring in ${spec.loc}`);
       cleaverQueueBefore = get("juneCleaverQueue");
-      // Post-dress res verification (session 2026-08-09): switch-path builds landed at
-      // 15–17 real res while the maximizer's model said 18 — 8.3%/fight instead of 10%.
-      // When that happens, re-dress with the utility-familiar build, which hit the cap
-      // every fight that session. Runs before damagePlan/mood so both see final gear.
-      const dressedRes = numericModifier(resModifierName(spec.key));
-      if (dressedRes < PEARL_RES_CAP && familiarPlanPathFor(spec.key) === "switch") {
-        print(
-          `pearlo: ${spec.loc} dressed to ${dressedRes} ${spec.key} res (< ${PEARL_RES_CAP} cap) on the ` +
-            `maximizer switch path — re-dressing with the utility-familiar build`,
-          "red",
-        );
-        Outfit.from(
-          buildPearlOutfit(spec, true),
-          new Error(`pearlo: fallback outfit for ${spec.loc} could not be built`),
-        ).dress();
-        print(
-          `pearlo: ${spec.loc} fallback build reaches ${numericModifier(resModifierName(spec.key))} ${spec.key} res`,
-        );
-      }
       const plan = damagePlan(spec.maxHp); // post-dress: real equipped modifiers
-      pearlMood(spec, plan.mpPerFight);
+      pearlMood(spec, plan.mpPerFight, worthItFor(spec), turnsForFights);
+      // Only now is the outfit both dressed and buffed, so only now is its resistance
+      // worth measuring against the cap.
+      if (escalateFamiliarIfShort(spec)) {
+        // A kept escalation changes both familiar and cast count: re-run the mood so the
+        // MP buffer and weight potions match the build we actually fight in.
+        pearlMood(spec, damagePlan(spec.maxHp).mpPerFight, worthItFor(spec), turnsForFights);
+      }
+      // Last, so the free resistance — buffs, then the familiar switch — is already
+      // counted and we only ever buy the tier none of it reached.
+      // The gate chose and priced this plan; the executor re-asks that same model
+      // whether it still pays from the resistance actually dressed.
+      topUpRes(spec, zoneVerdict(spec).potionPlan, worthItFor(spec), turnsForFights);
+      // Everything that can raise resistance has now run, so this is the first honest
+      // reading of what the zone will actually fight at.
+      const finalRes = numericModifier(resModifierName(spec.key));
+      if (finalRes < PEARL_RES_CAP) warnBelowCap(spec, finalRes);
       if (wineglassMode()) {
         // Wineglass combat is attack-only: no stuns, no items. Policy (user): halt
         // entirely unless the equipped weapon one-shots the zone's toughest monster
@@ -364,7 +415,7 @@ function pearlTask(spec: PearlSpec): Task {
         const res = numericModifier(resModifierName(spec.key));
         if (res < PEARL_RES_CAP) {
           abort(
-            `pearlo: ${spec.key} res is ${res} (< ${PEARL_RES_CAP} cap) in ${spec.loc} and requirecap is set — fights would yield ${1.7 * Math.floor(res / 3)}% instead of 10%. Add resistance or drop requirecap.`,
+            `pearlo: ${spec.key} res is ${res} (< ${PEARL_RES_CAP} cap) in ${spec.loc} and requirecap is set — fights would yield ${progressRatePct(res).toFixed(1)}% instead of 10%. Add resistance or drop requirecap.`,
           );
         }
       }
@@ -390,7 +441,12 @@ function pearlTask(spec: PearlSpec): Task {
       }
       lastRecordedProgress.set(spec.key, progress);
     },
-    outfit: () => buildPearlOutfit(spec),
+    outfit: () => {
+      // Last hook before the maximizer runs (grimoire dresses before prepare), so the
+      // buffs have to be cast here to be in the outfit's model at all.
+      castFreeResBuffs(spec);
+      return buildPearlOutfit(spec);
+    },
     // The plan is computed inside the thunk: grimoire compiles macros AFTER dress but
     // BEFORE prepare (engine.js execute()), so a shared closure variable served fight 1
     // a plan priced on launch gear — optimistic launch gear skipped Entangling Noodles
