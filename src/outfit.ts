@@ -16,7 +16,13 @@ import {
   playerAirByEffect,
   resFamiliarSwitches,
 } from "./familiar";
-import { allOrganEquipment, liverMode, requiredOrganEquipment, wineglassMode } from "./organs";
+import {
+  LiverMode,
+  allOrganEquipment,
+  liverMode,
+  requiredOrganEquipment,
+  wineglassMode,
+} from "./organs";
 import {
   PEARL_RES_CAP,
   PEARL_RES_HEADROOM,
@@ -127,6 +133,51 @@ export function pearlAvoidTerms(spec: PearlSpec): string {
   return [...GLOBAL_AVOID, ...(spec.avoid ?? [])].map((i) => `, -"equip ${i}"`).join("");
 }
 
+/**
+ * Slots the real outfit commits before the maximizer gets a say. Exported so the profit
+ * model speculates against the same committed slots: pricing a zone with the back slot
+ * and the lantern accessories still free reports resistance the run cannot reach.
+ */
+export function pearlForcedEquipment(
+  spec: PearlSpec,
+  mode: LiverMode,
+): { equip: Item[]; secondLantern?: Item } {
+  const overdrunk = mode === "wineglass";
+  const outfitName = outfitOverride(spec.key);
+  const organEquip = args.major.overcapped ? allOrganEquipment(mode) : requiredOrganEquipment(mode);
+  const equip: Item[] = [...organEquip];
+
+  if (overdrunk) {
+    // The wineglass IS the off-hand while overdrunk. A required angelbone totem
+    // displaces the configured drunkweapon; otherwise it is forced when owned.
+    equip.push($item`Drunkula's wineglass`);
+    const totemForced = organEquip.includes($item`angelbone totem`);
+    if (!totemForced && have(args.major.drunkweapon)) equip.push(args.major.drunkweapon);
+  }
+
+  // An outfit override owns every slot it names, and all the damage gear.
+  if (outfitName !== undefined) return { equip: [...equip, ...outfitPieces(outfitName)] };
+
+  // Only as much lantern gear as the one-shot needs: a lantern is worth about an extra
+  // cast, and the per-cast floor is computable. Overdrunk skips them, since lanterns
+  // duplicate spell components and the wineglass kills spells.
+  let secondLantern: Item | undefined;
+  if (!overdrunk) {
+    const needed = lanternComponentsNeededForOneShot(spec.maxHp);
+    const accessoryBudget = 3 - organEquip.filter((i) => toSlot(i) === $slot`acc1`).length;
+    const lanterns = selectLanternGear(
+      Number.isFinite(needed) ? needed : Infinity,
+      accessoryBudget,
+    );
+    equip.push(...lanterns.equip);
+    secondLantern = lanterns.secondOffhand;
+    if (have($item`unwrapped knock-off retro superhero cape`) && !airRequiresBackSlot()) {
+      equip.push($item`unwrapped knock-off retro superhero cape`);
+    }
+  }
+  return { equip, secondLantern };
+}
+
 export function buildPearlOutfit(spec: PearlSpec, familiarMode?: FamiliarMode): OutfitSpec {
   const overdrunk = wineglassMode();
   const outfitName = outfitOverride(spec.key);
@@ -136,33 +187,11 @@ export function buildPearlOutfit(spec: PearlSpec, familiarMode?: FamiliarMode): 
   // consumption headroom. A forced corset simply occupies the shirt: the parka never
   // equips and its mode is a harmless no-op; the maximizer chases res elsewhere.
   const organEquip = args.major.overcapped ? allOrganEquipment() : requiredOrganEquipment();
-  const equip: Item[] = [...organEquip];
-
-  if (overdrunk) {
-    // The wineglass IS the off-hand while overdrunk. A required angelbone totem
-    // displaces the configured drunkweapon (best-effort attack combat, user decision);
-    // otherwise the drunkweapon (default June cleaver) is forced when owned.
-    equip.push($item`Drunkula's wineglass`);
-    const totemForced = organEquip.includes($item`angelbone totem`);
-    if (!totemForced && have(args.major.drunkweapon)) equip.push(args.major.drunkweapon);
-  }
-
-  // Equip only as much lantern gear (any slot) as the one-shot actually needs —
-  // a lantern ≈ an extra cast, and we know the per-cast floor, so the need is
-  // computable (user design). Zero need = zero damage gear forced. Overdrunk:
-  // lanterns duplicate SPELL components and the wineglass kills spells — skip all.
-  // An outfit override owns ALL damage gear itself — skip lanterns there too.
-  let secondLantern: Item | undefined;
-  if (!overdrunk && outfitName === undefined) {
-    const needed = lanternComponentsNeededForOneShot(spec.maxHp);
-    const accessoryBudget = 3 - organEquip.filter((i) => toSlot(i) === $slot`acc1`).length;
-    const lanterns = selectLanternGear(
-      Number.isFinite(needed) ? needed : Infinity,
-      accessoryBudget,
-    );
-    equip.push(...lanterns.equip);
-    secondLantern = lanterns.secondOffhand;
-  }
+  const forced = pearlForcedEquipment(spec, liverMode());
+  const secondLantern = forced.secondLantern;
+  // The cape is pushed below with its mode; keep it out of the shared list.
+  const cape = $item`unwrapped knock-off retro superhero cape`;
+  const equip: Item[] = forced.equip.filter((i) => i !== cape);
 
   const modes: Modes = {};
   if (outfitName === undefined && have($item`Jurassic Parka`)) modes.parka = spec.parkaMode;

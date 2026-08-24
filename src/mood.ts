@@ -165,21 +165,27 @@ export function topUpFamiliarWeight(spec: PearlSpec, worthIt: WorthIt, turnsFor:
   // What the extra pounds are worth is the familiar's own step function, so ask it.
   const equip = equippedItem($slot`familiar`);
   const weight = familiarWeight(familiar) + weightAdjustment();
-  const pounds = sum(planned, (p) => p.pounds);
-  const gain =
-    numericModifier(familiar, resName, weight + pounds, equip) -
-    numericModifier(familiar, resName, weight, equip);
-  if (gain <= 0) return;
-  if (
-    !worthIt(
-      startRes,
-      gain,
-      sum(planned, (p) => p.value),
-    )
-  )
-    return;
+  const resAt = (pounds: number) => numericModifier(familiar, resName, weight + pounds, equip);
+  const base = resAt(0);
 
-  for (const { item, copies } of planned) use(item, copies);
+  // Weigh the combinations, not just the whole set: these familiars gain resistance in
+  // steps, so one potion that crosses a step must not be vetoed by another that cannot.
+  // Biggest gain first, so the best step we can afford is the one taken.
+  const subsets = Array.from({ length: 1 << planned.length }, (_, mask) =>
+    planned.filter((_p, i) => mask & (1 << i)),
+  )
+    .filter((subset) => subset.length > 0)
+    .map((subset) => ({
+      subset,
+      gain: resAt(sum(subset, (p) => p.pounds)) - base,
+      value: sum(subset, (p) => p.value),
+    }))
+    .filter((c) => c.gain > 0)
+    .sort((a, b) => b.gain - a.gain || a.value - b.value);
+
+  const chosen = subsets.find((c) => worthIt(startRes, c.gain, c.value));
+  if (chosen === undefined) return;
+  for (const { item, copies } of chosen.subset) use(item, copies);
 }
 
 const implementWarned = new Set<Effect>();
@@ -193,21 +199,31 @@ const implementWarned = new Set<Effect>();
  * A buff we expected to land and didn't is announced once: silently dropping the
  * spell-damage songs for want of an accordion would be a large, invisible cost.
  */
-function acquireEffectFree(ef: Effect): void {
-  const expected = canAcquireEffect(ef);
-  // Buff implements are not budgetable: mafia retrieves the *default* tool of the class
-  // (oil pan, Ouija board) before it will fall back to a lesser one already owned, so
-  // permitting any purchase permits a five-figure one that nothing here priced. Storage
-  // counts as buy-side for the same reason.
-  withProperties(
+/**
+ * Run `action` with every buy-side source off. Wrapped around a whole buff pass rather
+ * than each cast: mafia logs all four preferences on every change, so per-cast wrapping
+ * printed about a hundred lines a turn.
+ */
+function withoutBuying<T>(action: () => T): T {
+  return withProperties(
     {
       autoSatisfyWithMall: false,
       autoSatisfyWithNPCs: false,
       autoSatisfyWithCoinmasters: false,
       autoSatisfyWithStorage: false,
     },
-    () => tryAcquiringEffect(ef),
+    action,
   );
+}
+
+/** Acquire one buff. Callers must already be inside withoutBuying. */
+function acquireEffectFree(ef: Effect): void {
+  const expected = canAcquireEffect(ef);
+  // Buff implements are not budgetable: mafia retrieves the *default* tool of the class
+  // (oil pan, Ouija board) before it will fall back to a lesser one already owned, so
+  // permitting any purchase permits a five-figure one that nothing here priced. Storage
+  // counts as buy-side for the same reason.
+  tryAcquiringEffect(ef);
   if (expected && !have(ef) && !implementWarned.has(ef)) {
     implementWarned.add(ef);
     print(
@@ -242,7 +258,7 @@ export function castFreeResBuffs(spec: PearlSpec): void {
   const cost = pendingCastCosts(pending);
   if (myMp() < cost.mp) restoreMp(Math.min(myMaxmp(), cost.mp));
   if (myHp() <= cost.hp) restoreHp(myMaxhp());
-  for (const ef of pending) acquireEffectFree(ef);
+  withoutBuying(() => pending.forEach(acquireEffectFree));
 }
 
 /**
@@ -264,7 +280,7 @@ export function castSharedResBuffs(selected: PearlSpec[]): void {
     if (myMp() < cost.mp) restoreMp(Math.min(myMaxmp(), cost.mp));
     if (myHp() <= cost.hp) restoreHp(myMaxhp());
   });
-  for (const ef of pending) acquireEffectFree(ef);
+  withoutBuying(() => pending.forEach(acquireEffectFree));
 }
 
 /** Feel Peaceful is 3/day, and a spent skill still reads castable. */
@@ -600,7 +616,7 @@ export function pearlMood(
   if (myHp() <= pending.hp || myHp() < hpFloor * myMaxhp()) restoreHp(myMaxhp());
 
   // Non-resistance buffs stay free-only: their value is damage and MP, not turns.
-  for (const ef of buffs) acquireEffectFree(ef);
+  withoutBuying(() => buffs.forEach(acquireEffectFree));
 
   topUpFamiliarWeight(spec, worthIt, turnsFor);
 

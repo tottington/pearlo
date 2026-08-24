@@ -18,6 +18,36 @@ function spec(g: Game, key: string): PearlSpec {
   return found;
 }
 
+describe("active res effects that expire mid-zone", () => {
+  it("does not credit an effect that will lapse before the zone finishes", async () => {
+    // The measured resistance includes it now, but it is not there for the whole run —
+    // crediting it prices the zone a tier high with no way to hold that tier.
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 18, fishyTurns: 60 });
+      t.item("cold powder", { mall: 100, effect: "Insulated", duration: 20, res: { cold: 3 } });
+      t.effect("Insulated", { "Cold Resistance": 3 });
+      t.state.effects.set(t.mocks.Effect.get("Insulated"), 2);
+    });
+    g.args.resources.potionprice = 0; // inventory only: no plan can restore it
+    const v = g.economics.zoneVerdict(spec(g, "cold"));
+    expect(v.res).toBe(15);
+    expect(v.ratePct).toBeCloseTo(8.5);
+  });
+
+  it("credits one that outlasts the zone", async () => {
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 15, fishyTurns: 60 });
+      t.item("cold powder", { mall: 100, effect: "Insulated", duration: 20, res: { cold: 3 } });
+      t.effect("Insulated", { "Cold Resistance": 3 });
+      t.state.effects.set(t.mocks.Effect.get("Insulated"), 500);
+    });
+    g.args.resources.potionprice = 0;
+    const v = g.economics.zoneVerdict(spec(g, "cold"));
+    expect(v.res).toBe(15);
+    expect(v.potionPlan.use).toHaveLength(0);
+  });
+});
+
 describe("speculative resistance reading (charter 1)", () => {
   it("trusts the generated outfit's numbers even when maximize() returns false", async () => {
     // maximize(str, true) returns false whenever nothing beats the CURRENT outfit —
@@ -330,5 +360,41 @@ describe("valuation fallback", () => {
     });
     const pearl = g.item("unblemished pearl", { historical: 1234 });
     expect(g.economics.garboValue(pearl)).toBe(1234);
+  });
+});
+
+describe("forced slots in the speculation", () => {
+  // The dress always wears the retro cape in the back slot, so the model must not
+  // speculate resistance gear there. A run priced at 18 that dressed to 14 was exactly
+  // this: the pricing maximize had the back slot free, the real one had "-back".
+  const capeScenario = (t: Parameters<typeof standardScenario>[0]) => {
+    standardScenario(t, { res: 18, fishyTurns: 40 });
+    t.item("unwrapped knock-off retro superhero cape", { count: 1 });
+    // Air by effect, so the back slot is free for the cape rather than a breathing item.
+    t.active("Really Deep Breath", 50);
+  };
+
+  it("forces the cape's back slot into every speculative maximize", async () => {
+    const g = await loadGame(capeScenario);
+    g.economics.zoneVerdict(spec(g, "stench"));
+
+    const speculative = g.state.log.maximizes.filter((m) => m.speculate);
+    expect(speculative.length).toBeGreaterThan(0);
+    for (const { modifier } of speculative) {
+      expect(modifier).toContain("+equip unwrapped knock-off retro superhero cape");
+    }
+  });
+
+  it("forces exactly what the outfit builder commits", async () => {
+    const g = await loadGame(capeScenario);
+    const stench = spec(g, "stench");
+    const forced = g.outfit.pearlForcedEquipment(stench, g.organs.liverMode()).equip;
+    expect(forced.length).toBeGreaterThan(0);
+
+    g.economics.zoneVerdict(stench);
+    const first = g.state.log.maximizes.filter((m) => m.speculate)[0];
+    for (const item of forced) {
+      expect(first.modifier).toContain(`+equip ${item}`);
+    }
   });
 });

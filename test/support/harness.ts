@@ -57,6 +57,8 @@ export type Tools = {
   prop: (name: string, value: unknown) => void;
   /** Turns of Fishy currently active. */
   fishy: (turns: number) => void;
+  /** Make any effect active for `turns`. */
+  active: (name: string, turns: number) => void;
   /**
    * What every speculative maximize reports: per-element resistance plus a satisfied
    * Adventure Underwater requirement. Also `maximizeReturn` stays true unless a test
@@ -124,6 +126,9 @@ function makeTools(mocks: Mocks, state: GameState): Tools {
     fishy: (turns) => {
       state.effects.set(mocks.Effect.get("Fishy"), turns);
     },
+    active: (name, turns) => {
+      state.effects.set(mocks.Effect.get(name), turns);
+    },
     specRes: (res, extra = {}) => {
       if (typeof res === "number") {
         for (const resName of RES_NAMES) state.specMods[resName] = res;
@@ -146,6 +151,7 @@ export type Game = Tools & {
   economics: typeof import("../../src/economics");
   mood: typeof import("../../src/mood");
   organs: typeof import("../../src/organs");
+  outfit: typeof import("../../src/outfit");
   fishyModule: typeof import("../../src/fishy");
   pearls: typeof import("../../src/pearls");
   args: typeof import("../../src/args").args;
@@ -164,6 +170,7 @@ export async function loadGame(configure?: (tools: Tools) => void): Promise<Game
   const zones = await import("../../src/zones");
   const argsModule = await import("../../src/args");
   const organs = await import("../../src/organs");
+  const outfit = await import("../../src/outfit");
   const economics = await import("../../src/economics");
   const mood = await import("../../src/mood");
   const fishyModule = await import("../../src/fishy");
@@ -174,6 +181,7 @@ export async function loadGame(configure?: (tools: Tools) => void): Promise<Game
     economics,
     mood,
     organs,
+    outfit,
     fishyModule,
     pearls,
     args: argsModule.args,
