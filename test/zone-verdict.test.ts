@@ -18,6 +18,39 @@ function spec(g: Game, key: string): PearlSpec {
   return found;
 }
 
+describe("active res effects that expire mid-zone", () => {
+  it("does not credit an effect that will lapse before the zone finishes", async () => {
+    // The measured resistance includes it now, but it is not there for the whole run —
+    // crediting it prices the zone a tier high with no way to hold that tier.
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 18, fishyTurns: 60 });
+      t.item("cold powder", { mall: 100, effect: "Insulated", duration: 20, res: { cold: 3 } });
+      t.effect("Insulated", { "Cold Resistance": 3 });
+      t.state.effects.set(t.mocks.Effect.get("Insulated"), 2);
+    });
+    g.args.resources.potionprice = 0; // inventory only: no plan can restore it
+    const v = g.economics.zoneVerdict(spec(g, "cold"));
+    expect(v.res).toBe(15);
+    expect(v.ratePct).toBeCloseTo(8.5);
+  });
+
+  it("credits one that outlasts the zone", async () => {
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 15, fishyTurns: 60 });
+      t.item("cold powder", { mall: 100, effect: "Insulated", duration: 20, res: { cold: 3 } });
+      t.effect("Insulated", { "Cold Resistance": 3 });
+      t.state.effects.set(t.mocks.Effect.get("Insulated"), 500);
+    });
+    g.args.resources.potionprice = 0;
+    const v = g.economics.zoneVerdict(spec(g, "cold"));
+    // Gear 15 plus a +3 effect that outlasts the zone: the measured 18 stands, and
+    // there is nothing left to buy.
+    expect(v.res).toBe(18);
+    expect(v.ratePct).toBeCloseTo(10);
+    expect(v.potionPlan.use).toHaveLength(0);
+  });
+});
+
 describe("speculative resistance reading (charter 1)", () => {
   it("trusts the generated outfit's numbers even when maximize() returns false", async () => {
     // maximize(str, true) returns false whenever nothing beats the CURRENT outfit —
@@ -330,5 +363,172 @@ describe("valuation fallback", () => {
     });
     const pearl = g.item("unblemished pearl", { historical: 1234 });
     expect(g.economics.garboValue(pearl)).toBe(1234);
+  });
+});
+
+describe("forced slots in the speculation", () => {
+  // The dress always wears the retro cape in the back slot, so the model must not
+  // speculate resistance gear there. A run priced at 18 that dressed to 14 was exactly
+  // this: the pricing maximize had the back slot free, the real one had "-back".
+  const capeScenario = (t: Parameters<typeof standardScenario>[0]) => {
+    standardScenario(t, { res: 18, fishyTurns: 40 });
+    t.item("unwrapped knock-off retro superhero cape", { count: 1 });
+    // Air by effect, so the back slot is free for the cape rather than a breathing item.
+    t.active("Really Deep Breath", 50);
+  };
+
+  it("forces the cape's back slot into every speculative maximize", async () => {
+    const g = await loadGame(capeScenario);
+    g.economics.zoneVerdict(spec(g, "stench"));
+
+    const speculative = g.state.log.maximizes.filter((m) => m.speculate);
+    expect(speculative.length).toBeGreaterThan(0);
+    for (const { modifier } of speculative) {
+      expect(modifier).toContain("+equip unwrapped knock-off retro superhero cape");
+    }
+  });
+
+  it("forces exactly the committed list, not a superset", async () => {
+    // The cape case above covers under-forcing. This covers over-forcing: the model
+    // must not reserve a slot the dress leaves to the maximizer.
+    const g = await loadGame(capeScenario);
+    const stench = spec(g, "stench");
+    const forced = g.outfit.pearlForcedEquipment(stench, g.organs.liverMode()).equip;
+
+    g.economics.zoneVerdict(stench);
+    const first = g.state.log.maximizes.filter((m) => m.speculate)[0];
+    const equipTerms = first.modifier.match(/\+equip /g)?.length ?? 0;
+    expect(equipTerms).toBe(forced.length);
+    for (const item of forced) {
+      expect(first.modifier).toContain(`+equip ${item}`);
+    }
+  });
+});
+
+describe("resistance outweighs the outfit's tiebreakers", () => {
+  it("weights resistance above the item term so a slot cannot trade a tier away", async () => {
+    // A +3 resistance accessory scored 3.0 while a +25% item one scored 2.5 under
+    // "0.1 item", so the slot flipped between fights and the zone farmed a tier low.
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 18, fishyTurns: 40 });
+    });
+    g.economics.zoneVerdict(spec(g, "cold"));
+
+    const speculative = g.state.log.maximizes.filter((m) => m.speculate);
+    expect(speculative.length).toBeGreaterThan(0);
+    for (const { modifier } of speculative) {
+      const weight = Number(modifier.match(/^([\d.]+) cold res/)?.[1]);
+      const item = Number(modifier.match(/([\d.]+) item/)?.[1] ?? 0);
+      expect(weight).toBeGreaterThan(0);
+      // One resistance point must beat the item drop a single accessory can carry.
+      expect(weight).toBeGreaterThan(item * 25);
+    }
+  });
+
+  it("keeps damage able to outbid resistance while overdrunk", async () => {
+    // Attack-only combat aborts unless the weapon one-shots, so resistance must not
+    // dominate the weapon-damage terms there.
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 18, fishyTurns: 40 });
+      t.state.inebriety = 16;
+      t.item("Drunkula's wineglass", { count: 1 });
+    });
+    const objective = g.outfit.pearlResObjective(spec(g, "cold"), true);
+    expect(objective.startsWith("1 cold res")).toBe(true);
+  });
+});
+
+describe("forced gear must be wearable and match the dress", () => {
+  it("does not price a zone at zero because owned gear is restricted out", async () => {
+    // The speculation drops a configuration whose forced gear cannot be equipped. An
+    // owned-but-Standard-restricted cape would zero the zone and gate it out entirely.
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 18, fishyTurns: 40 });
+      t.item("unwrapped knock-off retro superhero cape", { count: 1, canEquip: false });
+      t.active("Really Deep Breath", 50);
+    });
+    const v = g.economics.zoneVerdict(spec(g, "cold"));
+    expect(v.res).toBe(18);
+    expect(v.go).toBe(true);
+  });
+
+  it("prices on predicted air while the dress reads current air", async () => {
+    // A ballast turtle grants air minutes later, so the model must free the back slot
+    // for the cape while the dress, running before that, still owes it to breathing.
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 18, fishyTurns: 40 });
+      t.item("unwrapped knock-off retro superhero cape", { count: 1 });
+      t.item("ballast turtle", { count: 1 });
+    });
+    const cold = spec(g, "cold");
+    g.economics.zoneVerdict(cold);
+    const speculative = g.state.log.maximizes.filter((m) => m.speculate);
+    const capeTerm = "+equip unwrapped knock-off retro superhero cape";
+
+    // Predicted air is true, so the model commits the back slot to the cape.
+    expect(speculative.some((m) => m.modifier.includes(capeTerm))).toBe(true);
+    // Current air is false and no other breathing gear is owned, so the dress does not.
+    const dressed = (g.outfit.buildPearlOutfit(cold).equip ?? []).map((i) => `${i}`);
+    expect(dressed).not.toContain("unwrapped knock-off retro superhero cape");
+  });
+});
+
+describe("outfit-override pieces still pass the avoid filter", () => {
+  async function overrideGame() {
+    const g = await loadGame((t) => standardScenario(t, { res: 18, fishyTurns: 40 }));
+    const bottle = g.item("broken champagne bottle", { count: 1 });
+    const sweatpants = g.item("old sweatpants", { count: 1 });
+    g.state.outfits.set("coldfit", [bottle, sweatpants]);
+    g.args.overrides.coldoutfit = "coldfit";
+    return g;
+  }
+
+  it("leaves override pieces to the caller, which filters the avoided ones", async () => {
+    // The helper must not pre-load them: buildPearlOutfit owns the avoid filter, and a
+    // forced avoided piece would be worn while the log claimed it was dropped.
+    const g = await overrideGame();
+    const forced = g.outfit.pearlForcedEquipment(spec(g, "cold"), g.organs.liverMode()).equip;
+    const names = forced.map((i) => `${i}`);
+    expect(names).not.toContain("broken champagne bottle");
+    expect(names).not.toContain("old sweatpants");
+  });
+
+  it("keeps the avoided piece out of the dressed outfit", async () => {
+    const g = await overrideGame();
+    const built = g.outfit.buildPearlOutfit(spec(g, "cold"));
+    const names = (built.equip ?? []).map((i) => `${i}`);
+    expect(names).toContain("old sweatpants");
+    expect(names).not.toContain("broken champagne bottle");
+  });
+});
+
+describe("the dressed outfit carries the same objective as the model", () => {
+  it("weights resistance in buildPearlOutfit's own modifier", async () => {
+    // The model's expression is asserted elsewhere; this pins the one the run dresses
+    // with, which is the string that actually decides the accessory slot.
+    const g = await loadGame((t) => standardScenario(t, { res: 18, fishyTurns: 40 }));
+    const built = g.outfit.buildPearlOutfit(spec(g, "cold"));
+    const modifier = Array.isArray(built.modifier)
+      ? built.modifier.join(", ")
+      : (built.modifier ?? "");
+    const weight = Number(modifier.match(/([\d.]+) cold res/)?.[1]);
+    const item = Number(modifier.match(/([\d.]+) item/)?.[1] ?? 0);
+    expect(weight).toBeGreaterThan(item * 25);
+  });
+
+  it("does not force a cape it cannot equip, in the dress as in the model", async () => {
+    // The model drops a configuration whose forced gear cannot be worn. If the dress
+    // forced it anyway, grimoire would throw on a zone the model had just approved.
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 18, fishyTurns: 40 });
+      t.item("unwrapped knock-off retro superhero cape", { count: 1, canEquip: false });
+      t.active("Really Deep Breath", 50);
+    });
+    const cold = spec(g, "cold");
+    const forced = g.outfit.pearlForcedEquipment(cold, g.organs.liverMode()).equip;
+    const built = g.outfit.buildPearlOutfit(cold);
+    const dressed = (built.equip ?? []).map((i) => `${i}`);
+    expect(forced.map((i) => `${i}`)).not.toContain("unwrapped knock-off retro superhero cape");
+    expect(dressed).not.toContain("unwrapped knock-off retro superhero cape");
   });
 });

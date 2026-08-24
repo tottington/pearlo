@@ -120,3 +120,11 @@ Some internals would need exporting for direct (rather than behavioral) coverage
 see the suite report: `costZone` (budget-mutation invariant), `evaluateZone`,
 `scoreLiverMode`/`candidateLiverModes`, `purchaseCost`/`acquisitionCost`,
 `speculativeResFloor`, `executeResPlan`.
+
+## Deliberately not covered
+
+- **A resistance effect that is both live and carried.** `evaluateZone` must count such
+  an effect once: it is already inside the measured resistance, so a carried stack for
+  it adds nothing. Reproducing the double-credit needs a first zone long enough for the
+  live effect to count as expiring there and be planned, which the fixture set cannot
+  currently reach. The guard is in `evaluateZone`; the test is not.

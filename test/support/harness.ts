@@ -29,6 +29,8 @@ export type ItemOptions = {
   duration?: number;
   /** Resistance the granted effect provides, per element name or "all". */
   res?: Partial<Record<"spooky" | "sleaze" | "hot" | "stench" | "cold" | "all", number>>;
+  /** False marks the item owned but unwearable, as Standard restriction does. */
+  canEquip?: boolean;
   /** Copies in inventory. */
   count?: number;
   tradeable?: boolean;
@@ -57,6 +59,10 @@ export type Tools = {
   prop: (name: string, value: unknown) => void;
   /** Turns of Fishy currently active. */
   fishy: (turns: number) => void;
+  /** Make any effect active for `turns`. */
+  active: (name: string, turns: number) => void;
+  /** What dressing an outfit yields. `spec.modifier` says which build it is. */
+  onDress: (handler: (modifier: string) => void) => void;
   /**
    * What every speculative maximize reports: per-element resistance plus a satisfied
    * Adventure Underwater requirement. Also `maximizeReturn` stays true unless a test
@@ -75,6 +81,8 @@ function makeTools(mocks: Mocks, state: GameState): Tools {
     if (options.historical !== undefined) state.historicalPrices.set(it, options.historical);
     if (options.sale !== undefined) state.saleValues.set(it, options.sale);
     if (options.count !== undefined) state.inventory.set(it, options.count);
+    if (options.canEquip === false) state.unequippable.add(it);
+    else if (options.canEquip === true) state.unequippable.delete(it);
     if (options.tradeable === false) state.untradeable.add(it);
     const mods = state.itemMods.get(it) ?? {};
     if (options.duration !== undefined) mods["Effect Duration"] = options.duration;
@@ -124,6 +132,15 @@ function makeTools(mocks: Mocks, state: GameState): Tools {
     fishy: (turns) => {
       state.effects.set(mocks.Effect.get("Fishy"), turns);
     },
+    active: (name, turns) => {
+      state.effects.set(mocks.Effect.get(name), turns);
+    },
+    onDress: (handler) => {
+      state.onDress = (spec) => {
+        const modifier = (spec as { modifier?: string | string[] } | undefined)?.modifier;
+        handler(Array.isArray(modifier) ? modifier.join(", ") : (modifier ?? ""));
+      };
+    },
     specRes: (res, extra = {}) => {
       if (typeof res === "number") {
         for (const resName of RES_NAMES) state.specMods[resName] = res;
@@ -146,6 +163,8 @@ export type Game = Tools & {
   economics: typeof import("../../src/economics");
   mood: typeof import("../../src/mood");
   organs: typeof import("../../src/organs");
+  outfit: typeof import("../../src/outfit");
+  familiarModule: typeof import("../../src/familiar");
   fishyModule: typeof import("../../src/fishy");
   pearls: typeof import("../../src/pearls");
   args: typeof import("../../src/args").args;
@@ -164,6 +183,8 @@ export async function loadGame(configure?: (tools: Tools) => void): Promise<Game
   const zones = await import("../../src/zones");
   const argsModule = await import("../../src/args");
   const organs = await import("../../src/organs");
+  const outfit = await import("../../src/outfit");
+  const familiarModule = await import("../../src/familiar");
   const economics = await import("../../src/economics");
   const mood = await import("../../src/mood");
   const fishyModule = await import("../../src/fishy");
@@ -174,6 +195,8 @@ export async function loadGame(configure?: (tools: Tools) => void): Promise<Game
     economics,
     mood,
     organs,
+    outfit,
+    familiarModule,
     fishyModule,
     pearls,
     args: argsModule.args,

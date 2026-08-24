@@ -48,7 +48,13 @@ import { acquireLucky, luckySourceAvailable, remainingPearlFights } from "./fish
 import { abortIfBeatenUp, asdonFualable, fuelUp, handlePostCombatBeatenUp } from "./lib";
 import { WorthIt, castFreeResBuffs, pearlMood, topUpFamiliarWeight, topUpRes } from "./mood";
 import { wineglassMode } from "./organs";
-import { buildPearlOutfit, familiarModeApplies, familiarModeFor, setFamiliarMode } from "./outfit";
+import {
+  FamiliarMode,
+  buildPearlOutfit,
+  familiarModeApplies,
+  familiarModeFor,
+  setFamiliarMode,
+} from "./outfit";
 import {
   PEARL_RES_CAP,
   PEARLS,
@@ -293,8 +299,8 @@ function worthItFor(spec: PearlSpec): WorthIt {
   return (fromRes, gain, cost) => resStepWorthIt(spec, fromRes, gain, cost);
 }
 
-/** Zones whose one escalation attempt has already been spent (win or lose). */
-const escalationTried = new Set<PearlKey>();
+/** Zone-and-direction pairs whose escalation attempt has been spent (win or lose). */
+const escalationTried = new Set<string>();
 
 /** Below-cap fights lose progress, so say so every time — never latch this warning. */
 function warnBelowCap(spec: PearlSpec, res: number): void {
@@ -308,50 +314,55 @@ function warnBelowCap(spec: PearlSpec, res: number): void {
 /**
  * Dress-then-verify: measure the real outfit once it is dressed and buffed, and only
  * then, if it is short of the cap, try the res-familiar build and keep whichever
- * measures higher. The experiment runs once per zone; the warning does not. Returns
+ * measures higher. Each direction is tried at most once per zone, and only while the
+ * zone is under the cap. Returns
  * true when it leaves a different build dressed than the mood was sized against.
  */
 function escalateFamiliarIfShort(spec: PearlSpec): boolean {
-  const res = numericModifier(resModifierName(spec.key));
-  if (res >= PEARL_RES_CAP) return false;
+  const worn = numericModifier(resModifierName(spec.key));
+  if (worn >= PEARL_RES_CAP) return false;
 
   // A zone that pins its familiar (stooper, familiar override, outfit override) would
   // rebuild the identical outfit, and with no res familiar owned there is nothing to
   // switch to — in both cases the dress is pure waste.
-  const canEscalate =
-    familiarModeApplies(spec) &&
-    resFamiliarSwitches(spec).length > 0 &&
-    familiarModeFor(spec.key) !== "switch" &&
-    !escalationTried.has(spec.key);
-  if (!canEscalate) return false;
-  escalationTried.add(spec.key);
+  if (!familiarModeApplies(spec) || resFamiliarSwitches(spec).length === 0) return false;
 
-  print(
-    `pearlo: ${spec.loc} dressed and buffed to ${res} ${spec.key} res — trying the res familiar`,
-  );
+  // Always compare against the mode we are NOT in: the outfit hook has already dressed
+  // the settled one, so re-dressing it would measure the same number and then "revert"
+  // to the loser. The first comparison per zone is the experiment; later ones only run
+  // while the zone is under the cap, which is when a re-check is worth a dress.
+  // One experiment per direction per zone. Bounding only the utility side let a settled
+  // zone re-dress twice on every fight for the rest of its life, and a single inflated
+  // measurement could then adopt the worse build with no way back.
+  const current = familiarModeFor(spec.key);
+  const other: FamiliarMode = current === "switch" ? "utility" : "switch";
+  const attempt = `${spec.key}:${other}`;
+  if (escalationTried.has(attempt)) return false;
+  escalationTried.add(attempt);
+
+  print(`pearlo: ${spec.loc} dressed and buffed to ${worn} ${spec.key} res — trying ${other}`);
   Outfit.from(
-    buildPearlOutfit(spec, "switch"),
-    new Error(`pearlo: res-familiar outfit for ${spec.loc} could not be built`),
+    buildPearlOutfit(spec, other),
+    new Error(`pearlo: ${other} outfit for ${spec.loc} could not be built`),
   ).dress();
   // The res familiars scale with weight, and the weight potions are only spent on a
-  // familiar that scales — the mood ran against the utility pick, so top up now or the
+  // familiar that scales — the mood ran against the other pick, so top up now or the
   // candidate is judged up to 15 lbs light.
   topUpFamiliarWeight(spec, worthItFor(spec), turnsForFights);
 
-  const switched = numericModifier(resModifierName(spec.key));
-  if (switched > res) {
-    setFamiliarMode(spec.key, "switch");
-    print(`pearlo: ${spec.loc} res familiar reaches ${switched} ${spec.key} res — keeping it`);
+  const alternative = numericModifier(resModifierName(spec.key));
+  if (alternative > worn) {
+    setFamiliarMode(spec.key, other);
+    print(`pearlo: ${spec.loc} ${other} build reaches ${alternative} ${spec.key} res — keeping it`);
     return true;
   }
   Outfit.from(
-    buildPearlOutfit(spec, "utility"),
-    new Error(`pearlo: utility outfit for ${spec.loc} could not be built`),
+    buildPearlOutfit(spec, current),
+    new Error(`pearlo: ${current} outfit for ${spec.loc} could not be built`),
   ).dress();
-  const reverted = numericModifier(resModifierName(spec.key));
   print(
-    `pearlo: ${spec.loc} res familiar reached only ${switched} ${spec.key} res — reverted to ` +
-      `the utility build at ${reverted}`,
+    `pearlo: ${spec.loc} ${other} build reached only ${alternative} ${spec.key} res — kept the ` +
+      `${current} build at ${numericModifier(resModifierName(spec.key))}`,
   );
   return false;
 }
