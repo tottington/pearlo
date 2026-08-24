@@ -50,7 +50,7 @@ const collisionNoticePrinted = new Set<string>();
 /**
  * How a zone spends its familiar slot. "utility" is the default; a zone escalates to
  * "switch" only once a dressed, buffed build measures below the res cap and the switch
- * build measures higher (pearls.ts). Decided once per zone.
+ * build measures higher (pearls.ts). Each direction is tried at most once per zone.
  */
 export type FamiliarMode = "utility" | "switch";
 const familiarModes = new Map<string, FamiliarMode>();

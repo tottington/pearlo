@@ -61,6 +61,8 @@ export type Tools = {
   fishy: (turns: number) => void;
   /** Make any effect active for `turns`. */
   active: (name: string, turns: number) => void;
+  /** What dressing an outfit yields. `spec.modifier` says which build it is. */
+  onDress: (handler: (modifier: string) => void) => void;
   /**
    * What every speculative maximize reports: per-element resistance plus a satisfied
    * Adventure Underwater requirement. Also `maximizeReturn` stays true unless a test
@@ -132,6 +134,12 @@ function makeTools(mocks: Mocks, state: GameState): Tools {
     },
     active: (name, turns) => {
       state.effects.set(mocks.Effect.get(name), turns);
+    },
+    onDress: (handler) => {
+      state.onDress = (spec) => {
+        const modifier = (spec as { modifier?: string | string[] } | undefined)?.modifier;
+        handler(Array.isArray(modifier) ? modifier.join(", ") : (modifier ?? ""));
+      };
     },
     specRes: (res, extra = {}) => {
       if (typeof res === "number") {

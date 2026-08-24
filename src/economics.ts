@@ -679,10 +679,20 @@ function evaluateZone(spec: PearlSpec, mode: LiverMode, budget: FishyBudget): Zo
   const gearTurns = turnsAt(rawGearRes);
   const carried = budget.carried.filter((c) => c.turnsLeft >= gearTurns);
   const { lasting, expiring } = activeResEffects(spec, gearTurns);
+  // Each effect counts once. One that is running now is already inside rawGearRes, so
+  // only a carried stack for an effect we do NOT have adds resistance; and an expiring
+  // one is only discounted when no carried stack covers the rest of the zone.
+  const carriedRescues = (ef: Effect) => carried.some((c) => c.effect === ef);
   const gearRes = Math.min(
     rawGearRes +
-      sum(carried, (c) => numericModifier(c.effect, resName)) -
-      sum(expiring, (ef) => numericModifier(ef, resName)),
+      sum(
+        carried.filter((c) => !haveEffect(c.effect)),
+        (c) => numericModifier(c.effect, resName),
+      ) -
+      sum(
+        expiring.filter((ef) => !carriedRescues(ef)),
+        (ef) => numericModifier(ef, resName),
+      ),
     PEARL_RES_CAP,
   );
 

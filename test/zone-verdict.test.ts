@@ -43,7 +43,10 @@ describe("active res effects that expire mid-zone", () => {
     });
     g.args.resources.potionprice = 0;
     const v = g.economics.zoneVerdict(spec(g, "cold"));
-    expect(v.res).toBe(15);
+    // Gear 15 plus a +3 effect that outlasts the zone: the measured 18 stands, and
+    // there is nothing left to buy.
+    expect(v.res).toBe(18);
+    expect(v.ratePct).toBeCloseTo(10);
     expect(v.potionPlan.use).toHaveLength(0);
   });
 });
@@ -449,25 +452,24 @@ describe("forced gear must be wearable and match the dress", () => {
     expect(v.go).toBe(true);
   });
 
-  it("leaves the back slot free when air needs it, in the model as in the dress", async () => {
-    // The dress reads current air; the model prices before the breathing task runs and
-    // must read predicted air, or the two disagree about who owns the back slot.
+  it("prices on predicted air while the dress reads current air", async () => {
+    // A ballast turtle grants air minutes later, so the model must free the back slot
+    // for the cape while the dress, running before that, still owes it to breathing.
     const g = await loadGame((t) => {
       standardScenario(t, { res: 18, fishyTurns: 40 });
       t.item("unwrapped knock-off retro superhero cape", { count: 1 });
       t.item("ballast turtle", { count: 1 });
     });
-    g.economics.zoneVerdict(spec(g, "cold"));
+    const cold = spec(g, "cold");
+    g.economics.zoneVerdict(cold);
     const speculative = g.state.log.maximizes.filter((m) => m.speculate);
-    const forced = g.outfit.pearlForcedEquipment(
-      spec(g, "cold"),
-      g.organs.liverMode(),
-      g.familiarModule.predictedPlayerAirByEffect,
-    ).equip;
-    const capeForced = forced.some((i) => `${i}`.includes("retro superhero cape"));
-    for (const { modifier } of speculative) {
-      expect(modifier.includes("+equip unwrapped knock-off retro superhero cape")).toBe(capeForced);
-    }
+    const capeTerm = "+equip unwrapped knock-off retro superhero cape";
+
+    // Predicted air is true, so the model commits the back slot to the cape.
+    expect(speculative.some((m) => m.modifier.includes(capeTerm))).toBe(true);
+    // Current air is false and no other breathing gear is owned, so the dress does not.
+    const dressed = (g.outfit.buildPearlOutfit(cold).equip ?? []).map((i) => `${i}`);
+    expect(dressed).not.toContain("unwrapped knock-off retro superhero cape");
   });
 });
 

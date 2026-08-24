@@ -177,6 +177,8 @@ export type GameState = {
   itemDailyUses: Map<Item, number>;
   untradeable: Set<Item>;
   unequippable: Set<Item>;
+  /** Called when an outfit is dressed, so a test can change what the player measures. */
+  onDress?: (spec: unknown) => void;
   effectMods: Map<Effect, Record<string, number>>;
   effectDefaultActions: Map<Effect, string[]>;
   skillMpCosts: Map<Skill, number>;
@@ -245,6 +247,7 @@ function freshState(): GameState {
     itemDailyUses: new Map(),
     untradeable: new Set(),
     unequippable: new Set(),
+    onDress: undefined,
     effectMods: new Map(),
     effectDefaultActions: new Map(),
     skillMpCosts: new Map(),
@@ -532,8 +535,16 @@ export function numericModifier(...args: unknown[]): number {
     return typeof v === "number" ? v : 0;
   }
   if (args.length === 2 && typeof args[0] === "string" && args[0] === "Generated:_spec") {
-    const v = __state.specMods[args[1] as string];
-    return typeof v === "number" ? v : 0;
+    // A speculated outfit's modifiers include the effects currently running, exactly as
+    // mafia reports them. Without this the model cannot tell "the gear reaches 18" from
+    // "the gear plus a buff that is about to expire reaches 18".
+    const modifier = args[1] as string;
+    const gear = __state.specMods[modifier];
+    let total = typeof gear === "number" ? gear : 0;
+    for (const [effect, turns] of __state.effects) {
+      if (turns > 0) total += __state.effectMods.get(effect)?.[modifier] ?? 0;
+    }
+    return total;
   }
   if (args.length === 2) {
     const [thing, modifier] = args as [unknown, string];

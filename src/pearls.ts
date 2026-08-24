@@ -299,8 +299,8 @@ function worthItFor(spec: PearlSpec): WorthIt {
   return (fromRes, gain, cost) => resStepWorthIt(spec, fromRes, gain, cost);
 }
 
-/** Zones whose one escalation attempt has already been spent (win or lose). */
-const escalationTried = new Set<PearlKey>();
+/** Zone-and-direction pairs whose escalation attempt has been spent (win or lose). */
+const escalationTried = new Set<string>();
 
 /** Below-cap fights lose progress, so say so every time — never latch this warning. */
 function warnBelowCap(spec: PearlSpec, res: number): void {
@@ -314,8 +314,8 @@ function warnBelowCap(spec: PearlSpec, res: number): void {
 /**
  * Dress-then-verify: measure the real outfit once it is dressed and buffed, and only
  * then, if it is short of the cap, try the res-familiar build and keep whichever
- * measures higher. The first comparison per zone is unconditional; later ones run only
- * while the zone is under the cap. Returns
+ * measures higher. Each direction is tried at most once per zone, and only while the
+ * zone is under the cap. Returns
  * true when it leaves a different build dressed than the mood was sized against.
  */
 function escalateFamiliarIfShort(spec: PearlSpec): boolean {
@@ -331,10 +331,14 @@ function escalateFamiliarIfShort(spec: PearlSpec): boolean {
   // the settled one, so re-dressing it would measure the same number and then "revert"
   // to the loser. The first comparison per zone is the experiment; later ones only run
   // while the zone is under the cap, which is when a re-check is worth a dress.
+  // One experiment per direction per zone. Bounding only the utility side let a settled
+  // zone re-dress twice on every fight for the rest of its life, and a single inflated
+  // measurement could then adopt the worse build with no way back.
   const current = familiarModeFor(spec.key);
   const other: FamiliarMode = current === "switch" ? "utility" : "switch";
-  if (current === "utility" && escalationTried.has(spec.key)) return false;
-  escalationTried.add(spec.key);
+  const attempt = `${spec.key}:${other}`;
+  if (escalationTried.has(attempt)) return false;
+  escalationTried.add(attempt);
 
   print(`pearlo: ${spec.loc} dressed and buffed to ${worn} ${spec.key} res — trying ${other}`);
   Outfit.from(
