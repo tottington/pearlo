@@ -433,7 +433,7 @@ function pearlTask(spec: PearlSpec): Task {
     },
     do: spec.loc,
     // 1557 = Peering Through Your Peridot (first adventure of the day per zone with
-    // the Peridot of Peril equipped — the maximizer picks it for its +item/regen).
+    // the Peridot of Peril equipped — the maximizer can pick it for its regen).
     // Selecting a monster enters that fight immediately (no turn lost), so answer with
     // the zone's safest pick; unanswered, the NC halts the script. Property format
     // "1&bandersnatch=<monsterid>" is mafia's Map-the-Monsters-style encoding.
