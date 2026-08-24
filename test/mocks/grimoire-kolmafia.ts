@@ -86,12 +86,21 @@ export class CombatStrategy {
 }
 
 export class Outfit {
+  private spec: unknown;
   static from(spec: unknown, error?: Error): Outfit {
-    void spec;
     void error;
-    return new Outfit();
+    const outfit = new Outfit();
+    outfit.spec = spec;
+    return outfit;
   }
-  dress(): void {}
+  /**
+   * Dressing changes what the player measures. Tests register a handler to say what a
+   * given outfit spec yields; without one this stays a no-op, so a test that needs the
+   * dress to matter has to say so rather than silently measuring the same number.
+   */
+  dress(): void {
+    __state.onDress?.(this.spec);
+  }
   equip(): boolean {
     return true;
   }
