@@ -66,6 +66,11 @@ export const PEARL_RES_CAP = 18;
  */
 export const PEARL_RES_HEADROOM = 3;
 
+/** Pearl progress per fight at a given resistance: 1.7% per 3 res, floored, capped at 10%. */
+export function progressRatePct(res: number): number {
+  return Math.max(1.7, Math.min(10, 1.7 * Math.floor(res / 3)));
+}
+
 export type PearlKey = "spooky" | "sleaze" | "hot" | "stench" | "cold";
 
 /** Mafia numeric-modifier name for a pearl element's resistance level. */
