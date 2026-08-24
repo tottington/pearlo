@@ -314,6 +314,33 @@ describe("topUpFamiliarWeight worthIt gate", () => {
     expect(g.state.log.uses).toHaveLength(0);
   });
 
+  it("takes the cheap potion alone when the expensive one cannot pay its own way", async () => {
+    // Teardrop alone (+10 lbs) reaches the 30 lb step; sea grease (+5) adds nothing more
+    // but would drag the combined sale value past what the step is worth.
+    const g = await loadGame((t) => {
+      executorScenario(t);
+      t.state.currentFamiliar = t.mocks.Familiar.get("Exotic Parrot");
+      t.state.familiarModImpl = (_fam, _mod, weight) => (weight >= 30 ? 3 : 0);
+      t.item("temporary teardrop tattoo", {
+        sale: 500,
+        count: 1,
+        effect: "Crocodile Tear",
+        duration: 15,
+      });
+      t.effect("Crocodile Tear", { "Familiar Weight": 10 });
+      t.item("sea grease", { sale: 3000, count: 1, effect: "Greased-Up Familiar", duration: 15 });
+      t.effect("Greased-Up Familiar", { "Familiar Weight": 5 });
+    });
+    const spec = coldSpec(g);
+    g.mood.topUpFamiliarWeight(
+      spec,
+      (from, gain, cost) => g.economics.resStepWorthIt(spec, from, gain, cost),
+      g.economics.turnsForFights,
+    );
+    // All-or-nothing would spend nothing here: 3,500 of sale value against 2,000 saved.
+    expect(g.state.log.uses.map((u) => String(u.item))).toEqual(["temporary teardrop tattoo"]);
+  });
+
   it("never spends when the extra pounds buy no resistance step", async () => {
     const g = await famWeightGame(1);
     g.state.familiarModImpl = () => 0; // flat: weight buys nothing

@@ -62,9 +62,16 @@ export const PEARL_RES_CAP = 18;
 /**
  * Resistance to chase beyond the cap. The buffs are cast before the maximizer runs, so
  * without headroom it stops at exactly 18 and a lapsing buff (Feel Peaceful is 3/day)
- * drops a progress tier. Covers that lapse for roughly one slot of item drop.
+ * drops a progress tier. Three points absorbs a +2 buff lapsing without falling below.
  */
 export const PEARL_RES_HEADROOM = 3;
+
+/**
+ * How hard the outfit chases resistance relative to its tiebreakers. A regen accessory
+ * (Peridot of Peril, 12-15 HP and MP) scores ~1.35 under the 0.05 regen weights, so the
+ * margin has to stay wide enough that it cannot outbid a single resistance point.
+ */
+export const PEARL_RES_WEIGHT = 3;
 
 /** Pearl progress per fight at a given resistance: 1.7% per 3 res, floored, capped at 10%. */
 export function progressRatePct(res: number): number {
@@ -92,11 +99,9 @@ export type PearlSpec = {
   choices?: { [id: number]: number };
   /**
    * Monster to pick when the Peridot of Peril's "Peering Through Your Peridot" NC
-   * (choice 1557) fires — first adventure of the day per zone with the Peridot
-   * equipped; selection enters that combat immediately, no turn lost. The maximizer
-   * likes the Peridot (+15% item, HP/MP regen match the outfit tie-breaker weights),
-   * so the NC WILL fire; unanswered it halts the script. Picks are the zone's safest
-   * monster per docs/sea-reference.md §3.
+   * (choice 1557) fires — first adventure of the day per zone with the Peridot equipped.
+   * Selection enters that combat immediately, no turn lost; unanswered it halts the
+   * script. Picks are the zone's safest monster per docs/sea-reference.md §3.
    */
   peridotMonster: Monster;
   /** Highest monster HP in the zone (docs/sea-reference.md §3) — the one-shot target. */

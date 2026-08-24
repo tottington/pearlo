@@ -224,7 +224,7 @@ describe("candidateResPlans step function (charter 18)", () => {
     expect(plansFor(g, 15, 0)).toHaveLength(0);
   });
 
-  it("skips potions whose effect is already active or carried from an earlier zone", async () => {
+  it("skips potions whose effect is covered for the whole zone", async () => {
     const g = await loadGame((t) => {
       standardScenario(t);
       t.item("cold powder", { mall: 100, effect: "Insulated", duration: 20, res: { cold: 3 } });
@@ -234,7 +234,19 @@ describe("candidateResPlans step function (charter 18)", () => {
     expect(
       g.economics.candidateResPlans(coldSpec(g), 15, 100, new Map(), [insulated]),
     ).toHaveLength(0);
+  });
+
+  it("offers a re-up for an effect that is running now but expires mid-zone", async () => {
+    // The old behaviour skipped anything merely active, so a stack lapsing part-way
+    // through left the plan with nothing to restore the tier.
+    const g = await loadGame((t) => {
+      standardScenario(t);
+      t.item("cold powder", { mall: 100, effect: "Insulated", duration: 20, res: { cold: 3 } });
+    });
+    g.args.resources.potionprice = 1000;
     g.state.effects.set(g.mocks.Effect.get("Insulated"), 5);
-    expect(plansFor(g, 15)).toHaveLength(0);
+    const plans = plansFor(g, 15);
+    expect(plans).toHaveLength(1);
+    expect(plans[0].use.map((u) => String(u.item))).toEqual(["cold powder"]);
   });
 });

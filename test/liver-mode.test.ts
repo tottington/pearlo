@@ -42,10 +42,10 @@ describe("chooseLiverConfiguration (charter 17)", () => {
       // Honest scores: items 40,000 vs wineglass 40,000 − 10,000... see asserts below.
       t.state.maximizeImpl = (modifier: string) => {
         const wineglass = modifier.includes("weapon damage");
-        if (modifier.startsWith("spooky")) {
+        if (modifier.includes("spooky res")) {
           t.state.specMods["Spooky Resistance"] = wineglass ? 9 : 18;
         }
-        if (modifier.startsWith("cold")) {
+        if (modifier.includes("cold res")) {
           t.state.specMods["Cold Resistance"] = wineglass ? 9 : 3;
         }
         t.state.specMods["Adventure Underwater"] = true;
@@ -76,10 +76,10 @@ describe("chooseLiverConfiguration (charter 17)", () => {
       t.item("Drunkula's wineglass", { count: 1 });
       t.state.maximizeImpl = (modifier: string) => {
         const wineglass = modifier.includes("weapon damage");
-        if (modifier.startsWith("spooky")) {
+        if (modifier.includes("spooky res")) {
           t.state.specMods["Spooky Resistance"] = wineglass ? 18 : 9;
         }
-        if (modifier.startsWith("cold")) {
+        if (modifier.includes("cold res")) {
           t.state.specMods["Cold Resistance"] = wineglass ? 18 : 3;
         }
         t.state.specMods["Adventure Underwater"] = true;

@@ -16,10 +16,17 @@ import {
   playerAirByEffect,
   resFamiliarSwitches,
 } from "./familiar";
-import { allOrganEquipment, liverMode, requiredOrganEquipment, wineglassMode } from "./organs";
+import {
+  LiverMode,
+  allOrganEquipment,
+  liverMode,
+  requiredOrganEquipment,
+  wineglassMode,
+} from "./organs";
 import {
   PEARL_RES_CAP,
   PEARL_RES_HEADROOM,
+  PEARL_RES_WEIGHT,
   PearlSpec,
   familiarWaterBreathingEquipment,
   waterBreathingEquipment,
@@ -43,7 +50,7 @@ const collisionNoticePrinted = new Set<string>();
 /**
  * How a zone spends its familiar slot. "utility" is the default; a zone escalates to
  * "switch" only once a dressed, buffed build measures below the res cap and the switch
- * build measures higher (pearls.ts). Decided once per zone.
+ * build measures higher (pearls.ts). Each direction is tried at most once per zone.
  */
 export type FamiliarMode = "utility" | "switch";
 const familiarModes = new Map<string, FamiliarMode>();
@@ -69,9 +76,13 @@ export function setFamiliarMode(key: string, mode: FamiliarMode): void {
   familiarModes.set(key, mode);
 }
 
-/** True when the only air supply we could bring is back-slot gear (old SCUBA tank etc.). */
-function airRequiresBackSlot(): boolean {
-  if (playerAirByEffect()) return false;
+/**
+ * True when the only air supply we could bring is back-slot gear (old SCUBA tank etc.),
+ * which is then what the back slot is spent on instead of the cape. `airByEffect` is a
+ * parameter because the profit model prices before the breathing task has run.
+ */
+function backSlotNeededForAir(airByEffect: () => boolean = playerAirByEffect): boolean {
+  if (airByEffect()) return false;
   return !waterBreathingEquipment.some((i) => toSlot(i) !== $slot`back` && have(i) && canEquip(i));
 }
 
@@ -106,25 +117,83 @@ export function capeMode(spec: PearlSpec): "kill" | "hold" {
 }
 
 /**
- * The non-resistance weights the real dress carries. Exported so the profit model can
- * speculate the same expression: a maximize for pure resistance reaches a higher figure
- * than the outfit the run actually wears, and pricing a zone on gear it will not dress
- * makes it under-buy and farm a tier below its estimate.
- *
- * Overdrunk chases the one-shot floor instead. 'effective' (weapon class matched to the
- * better attack stat) only applies when NO weapon is forced — it could contradict the
- * configured drunkweapon's class and fail every combination.
+ * The resistance objective, weighted so no tiebreaker can trade a resistance point away
+ * below the cap. Overdrunk keeps weight 1: attack-only combat aborts unless the weapon
+ * one-shots, so damage must stay able to outbid resistance there.
+ */
+export function pearlResObjective(spec: PearlSpec, overdrunk: boolean): string {
+  const weight = overdrunk ? 1 : PEARL_RES_WEIGHT;
+  return `${weight} ${spec.key} res ${PEARL_RES_CAP + PEARL_RES_HEADROOM} max`;
+}
+
+/**
+ * The non-resistance weights, shared with the profit model so the dress and the estimate
+ * optimize the same thing. No item-drop weight: `costZone` prices no item income.
+ * Overdrunk chases the one-shot floor; 'effective' applies only when no weapon is forced,
+ * since it could contradict the drunkweapon's class and fail every combination.
  */
 export function pearlOutfitWeights(overdrunk: boolean, weaponForced: boolean): string {
   const combat = overdrunk
     ? `${weaponForced ? "" : ", effective"}, 0.2 weapon damage, 0.2 weapon damage percent`
-    : ", 0.1 item";
+    : "";
   return `, 0.05 hp regen, 0.05 mp regen${combat}`;
 }
 
 /** Items the real dress refuses, as maximizer terms, so a speculation can refuse them too. */
 export function pearlAvoidTerms(spec: PearlSpec): string {
   return [...GLOBAL_AVOID, ...(spec.avoid ?? [])].map((i) => `, -"equip ${i}"`).join("");
+}
+
+/**
+ * Slots the outfit commits before the maximizer gets a say: organ extenders, the
+ * overdrunk weapon pair, the lantern gear and the cape's back slot. Override pieces are
+ * not included; the caller adds them after the avoid filter. Exported so the profit
+ * model speculates against the same slots, since pricing a zone with the back slot and
+ * the lantern accessories free reports resistance the run cannot reach.
+ */
+export function pearlForcedEquipment(
+  spec: PearlSpec,
+  mode: LiverMode,
+  // The profit model prices before the breathing task runs, so it passes its predicted
+  // air; the dress passes what is actually up. The back slot's fate follows from it.
+  airByEffect: () => boolean = playerAirByEffect,
+): { equip: Item[]; secondLantern?: Item } {
+  const overdrunk = mode === "wineglass";
+  const outfitName = outfitOverride(spec.key);
+  const organEquip = args.major.overcapped ? allOrganEquipment(mode) : requiredOrganEquipment(mode);
+  const equip: Item[] = [...organEquip];
+
+  if (overdrunk) {
+    // The wineglass IS the off-hand while overdrunk. A required angelbone totem
+    // displaces the configured drunkweapon; otherwise it is forced when owned.
+    equip.push($item`Drunkula's wineglass`);
+    const totemForced = organEquip.includes($item`angelbone totem`);
+    if (!totemForced && have(args.major.drunkweapon)) equip.push(args.major.drunkweapon);
+  }
+
+  // An outfit override owns every slot it names and all the damage gear, but its pieces
+  // are added by the caller: they still have to pass the avoid filter first.
+  if (outfitName !== undefined) return { equip };
+
+  // Only as much lantern gear as the one-shot needs: a lantern is worth about an extra
+  // cast, and the per-cast floor is computable. Overdrunk skips them, since lanterns
+  // duplicate spell components and the wineglass kills spells.
+  let secondLantern: Item | undefined;
+  if (!overdrunk) {
+    const needed = lanternComponentsNeededForOneShot(spec.maxHp);
+    const accessoryBudget = 3 - organEquip.filter((i) => toSlot(i) === $slot`acc1`).length;
+    const lanterns = selectLanternGear(
+      Number.isFinite(needed) ? needed : Infinity,
+      accessoryBudget,
+    );
+    equip.push(...lanterns.equip);
+    secondLantern = lanterns.secondOffhand;
+    // canEquip as well as have: the speculation drops a configuration whose forced gear
+    // cannot be worn, so an owned-but-restricted cape would price the zone at zero.
+    const cape = $item`unwrapped knock-off retro superhero cape`;
+    if (have(cape) && canEquip(cape) && !backSlotNeededForAir(airByEffect)) equip.push(cape);
+  }
+  return { equip, secondLantern };
 }
 
 export function buildPearlOutfit(spec: PearlSpec, familiarMode?: FamiliarMode): OutfitSpec {
@@ -136,43 +205,18 @@ export function buildPearlOutfit(spec: PearlSpec, familiarMode?: FamiliarMode): 
   // consumption headroom. A forced corset simply occupies the shirt: the parka never
   // equips and its mode is a harmless no-op; the maximizer chases res elsewhere.
   const organEquip = args.major.overcapped ? allOrganEquipment() : requiredOrganEquipment();
-  const equip: Item[] = [...organEquip];
-
-  if (overdrunk) {
-    // The wineglass IS the off-hand while overdrunk. A required angelbone totem
-    // displaces the configured drunkweapon (best-effort attack combat, user decision);
-    // otherwise the drunkweapon (default June cleaver) is forced when owned.
-    equip.push($item`Drunkula's wineglass`);
-    const totemForced = organEquip.includes($item`angelbone totem`);
-    if (!totemForced && have(args.major.drunkweapon)) equip.push(args.major.drunkweapon);
-  }
-
-  // Equip only as much lantern gear (any slot) as the one-shot actually needs —
-  // a lantern ≈ an extra cast, and we know the per-cast floor, so the need is
-  // computable (user design). Zero need = zero damage gear forced. Overdrunk:
-  // lanterns duplicate SPELL components and the wineglass kills spells — skip all.
-  // An outfit override owns ALL damage gear itself — skip lanterns there too.
-  let secondLantern: Item | undefined;
-  if (!overdrunk && outfitName === undefined) {
-    const needed = lanternComponentsNeededForOneShot(spec.maxHp);
-    const accessoryBudget = 3 - organEquip.filter((i) => toSlot(i) === $slot`acc1`).length;
-    const lanterns = selectLanternGear(
-      Number.isFinite(needed) ? needed : Infinity,
-      accessoryBudget,
-    );
-    equip.push(...lanterns.equip);
-    secondLantern = lanterns.secondOffhand;
-  }
+  const forced = pearlForcedEquipment(spec, liverMode());
+  const secondLantern = forced.secondLantern;
+  // The cape is pushed below with its mode; keep it out of the shared list.
+  const cape = $item`unwrapped knock-off retro superhero cape`;
+  const equip: Item[] = forced.equip.filter((i) => i !== cape);
 
   const modes: Modes = {};
   if (outfitName === undefined && have($item`Jurassic Parka`)) modes.parka = spec.parkaMode;
-  if (
-    !overdrunk &&
-    outfitName === undefined &&
-    have($item`unwrapped knock-off retro superhero cape`) &&
-    !airRequiresBackSlot()
-  ) {
-    equip.push($item`unwrapped knock-off retro superhero cape`);
+  // The helper already decided the cape's slot; re-deciding here is how the model and
+  // the dress drifted apart, and an ungated push would force gear canEquip rejects.
+  if (forced.equip.includes(cape)) {
+    equip.push(cape);
     modes.retrocape = ["heck", capeMode(spec)];
   }
 
@@ -281,7 +325,7 @@ export function buildPearlOutfit(spec: PearlSpec, familiarMode?: FamiliarMode): 
   // it could contradict the configured drunkweapon's class and fail every combination.
   const weaponForced =
     overdrunk && (organEquip.includes($item`angelbone totem`) || have(args.major.drunkweapon));
-  const baseModifier = `${spec.key} res ${PEARL_RES_CAP + PEARL_RES_HEADROOM} max${breathingKeywords(familiarPlan)}${pearlOutfitWeights(overdrunk, weaponForced)}`;
+  const baseModifier = `${pearlResObjective(spec, overdrunk)}${breathingKeywords(familiarPlan)}${pearlOutfitWeights(overdrunk, weaponForced)}`;
   const result: OutfitSpec = {
     modifier: familiarPlan.extraModifier
       ? `${baseModifier}, ${familiarPlan.extraModifier}`

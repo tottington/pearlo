@@ -38,10 +38,16 @@ import {
   requiredOrganEquipment,
   setLiverMode,
   wineglassMode,
+  liverMode,
 } from "./organs";
-import { pearlAvoidTerms, pearlOutfitWeights } from "./outfit";
+import {
+  pearlAvoidTerms,
+  pearlForcedEquipment,
+  pearlOutfitWeights,
+  pearlResObjective,
+} from "./outfit";
 import { pearlTasks } from "./pearls";
-import { PEARL_RES_CAP, PEARL_RES_HEADROOM, canBreathUnderwater } from "./zones";
+import { canBreathUnderwater } from "./zones";
 
 export function main(command?: string): void {
   sinceKolmafiaRevision(28100);
@@ -150,7 +156,7 @@ export function main(command?: string): void {
     const breathing = predictedPlayerAirByEffect() ? "" : ", adventure underwater";
     // Only force the wineglass into the speculation when it is actually reachable —
     // otherwise every combination FAILs on the +equip and the res verdict is garbage.
-    const wineglass = simDrunk && wineglassAccessible() ? ", +equip Drunkula's wineglass" : "";
+    const glassReachable = !simDrunk || wineglassAccessible();
     for (const p of selected) {
       print(` --- ${p.key} (${p.loc}) ---`, "blue");
       print(`  canAdventure: ${canAdventure(p.loc)}`);
@@ -175,23 +181,23 @@ export function main(command?: string): void {
       // damage weights in the expression the maximizer optimizes total score, so a
       // min flag reports FAIL on outfits that trade res for damage even when a
       // pure-res 18 exists. Reachability is the verdict lines' res floor above.
-      const organEquip = args.major.overcapped ? allOrganEquipment() : requiredOrganEquipment();
-      const totemForced = simDrunk && organEquip.includes($item`angelbone totem`);
-      const drunkweapon =
-        simDrunk && !totemForced && have(args.major.drunkweapon)
-          ? `, +equip ${args.major.drunkweapon}`
-          : "";
-      const weaponForced = totemForced || drunkweapon.length > 0;
-      const organEquips = organEquip.map((i) => `, +equip ${i}`).join("");
-      // The same weights and refusals buildPearlOutfit and the profit model use, so the
-      // outfit this prints is the one the run would actually dress.
+      // The same forced slots, weights and refusals buildPearlOutfit and the profit
+      // model use, so the outfit this prints is the one the run would dress.
+      const mode = simDrunk ? "wineglass" : liverMode();
+      // A closeted wineglass would make every combination fail the +equip, so leave it
+      // out of the expression rather than print garbage.
+      const forced = pearlForcedEquipment(p, mode, predictedPlayerAirByEffect).equip.filter(
+        (i) => glassReachable || i !== $item`Drunkula's wineglass`,
+      );
+      const weaponForced =
+        simDrunk && (forced.includes($item`angelbone totem`) || have(args.major.drunkweapon));
+      const forcedTerms = forced.map((i) => `, +equip ${i}`).join("");
       const expr =
-        `${p.key} res ${PEARL_RES_CAP + PEARL_RES_HEADROOM} max${breathing}${wineglass}` +
-        `${drunkweapon}${organEquips}${pearlOutfitWeights(simDrunk, weaponForced)}` +
-        `${pearlAvoidTerms(p)}`;
+        `${pearlResObjective(p, simDrunk)}${breathing}` +
+        `${forcedTerms}${pearlOutfitWeights(simDrunk, weaponForced)}${pearlAvoidTerms(p)}`;
       const overrideNote = outfitOverride(p.key) !== undefined ? " (ignores zone overrides)" : "";
       print(
-        `  recommended equips (as the run would dress)${wineglass ? " (wineglass in off-hand)" : ""}:${overrideNote}`,
+        `  recommended equips (as the run would dress)${simDrunk && glassReachable ? " (wineglass in off-hand)" : ""}:${overrideNote}`,
         "blue",
       );
       for (const boost of maximize(expr, 0, 0, true, true)) {
