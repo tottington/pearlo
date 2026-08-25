@@ -13,13 +13,7 @@ import {
 import { $item, get, have, sinceKolmafiaRevision } from "libram";
 
 import { args, outfitOverride, selectedPearls } from "./args";
-import {
-  damagePlan,
-  ownedLanternProspect,
-  requiredAttackFor,
-  weaponAttackPlan,
-  wineglassAccessible,
-} from "./combat";
+import { requiredAttackFor, weaponAttackPlan, wineglassAccessible } from "./combat";
 import {
   chooseLiverConfiguration,
   overrideReportLines,
@@ -42,6 +36,7 @@ import {
 } from "./organs";
 import {
   pearlAvoidTerms,
+  pearlDamagePlan,
   pearlForcedEquipment,
   pearlOutfitWeights,
   pearlResObjective,
@@ -160,6 +155,7 @@ export function main(command?: string): void {
     for (const p of selected) {
       print(` --- ${p.key} (${p.loc}) ---`, "blue");
       print(`  canAdventure: ${canAdventure(p.loc)}`);
+      const mode = simDrunk ? "wineglass" : liverMode();
       if (simDrunk) {
         const simWeapon = have(args.major.drunkweapon) ? args.major.drunkweapon : undefined;
         const attack = weaponAttackPlan(p.maxDef, p.maxHp, simWeapon);
@@ -170,9 +166,9 @@ export function main(command?: string): void {
           attack.canOneShot ? "blue" : "red",
         );
       } else {
-        const plan = damagePlan(p.maxHp, ownedLanternProspect());
+        const plan = pearlDamagePlan(p, mode);
         print(
-          `  saucegeyser floor (best gear) vs ${p.maxHp} HP: ${plan.perCast} → ${plan.casts} cast(s)/fight, ${plan.mpPerFight} MP/fight`,
+          `  saucegeyser floor (planned outfit) vs ${p.maxHp} HP: ${plan.perCast} → ${plan.casts} cast(s)/fight, ${plan.mpPerFight} MP/fight`,
         );
       }
       // Recommended equips mirror buildPearlOutfit's overdrunk weapon logic: the
@@ -183,7 +179,6 @@ export function main(command?: string): void {
       // pure-res 18 exists. Reachability is the verdict lines' res floor above.
       // The same forced slots, weights and refusals buildPearlOutfit and the profit
       // model use, so the outfit this prints is the one the run would dress.
-      const mode = simDrunk ? "wineglass" : liverMode();
       // A closeted wineglass would make every combination fail the +equip, so leave it
       // out of the expression rather than print garbage.
       const forced = pearlForcedEquipment(p, mode, predictedPlayerAirByEffect).equip.filter(
