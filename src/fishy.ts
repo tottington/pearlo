@@ -1,4 +1,5 @@
 import {
+  booleanModifier,
   buy,
   cliExecute,
   equip,
@@ -38,6 +39,46 @@ export const HAGGLING_FISHY_TURNS = 20;
 
 /** fishy pipe grants 10 turns of Fishy, 1/day (docs/sea-reference.md §1.2, wiki-verified). */
 export const FISHY_PIPE_TURNS = 10;
+
+/**
+ * Lutz, the Ice Skate grants 30 turns of Fishy on the day's first visit — free, and
+ * sea_skatepark.php is not an adventure, so it costs no turn (wiki Lutz, the Ice Skate).
+ */
+export const LUTZ_FISHY_TURNS = 30;
+
+/**
+ * One attempt per run, whatever the outcome. Availability then stops depending on
+ * mafia writing _skateBuff1, so a visit can never be counted and collected at once.
+ */
+let lutzVisitTried = false;
+
+/**
+ * Is Lutz's Fishy still on offer? Mafia's SkateParkRequest gates the visit on exactly
+ * this pair: the park has to be Ice Skate Territory, and the buff is once a day.
+ */
+export function lutzFishyAvailable(): boolean {
+  return !lutzVisitTried && get("skateParkStatus") === "ice" && !get("_skateBuff1");
+}
+
+/**
+ * Take Lutz's free Fishy. The request equips its own breathing gear, so this needs no
+ * outfit. Reports whether Fishy is up afterward.
+ */
+export function visitLutz(): boolean {
+  if (!lutzFishyAvailable()) return false;
+  // Spend the attempt up front: a source the run did not collect must leave the budget,
+  // or the zones priced on those 30 turns strand.
+  lutzVisitTried = true;
+  if (!booleanModifier("Adventure Underwater")) {
+    print("pearlo: skipping Lutz, the visit needs water breathing already up", "red");
+    return false;
+  }
+  print(`pearlo: taking Lutz's free ${LUTZ_FISHY_TURNS} turns of Fishy`);
+  cliExecute("skate lutz");
+  if (have($effect`Fishy`)) return true;
+  print("pearlo: Lutz granted no Fishy, dropping it from the budget", "red");
+  return false;
+}
 
 const CLOVER = $item`11-leaf clover`;
 const AUG_2 = $skill`Aug. 2nd: Find an Eleven-Leaf Clover Day`;
@@ -238,4 +279,21 @@ export function luckySourceReport(): string[] {
     `  hermit clovers left today: ${Math.max(0, HERMIT_CLOVER_LIMIT - get("_cloversPurchased"))}`,
     `  mall clovers: ${mall}`,
   ];
+}
+
+/** Sim-report line for the free, turn-free Fishy sources the budget already counts. */
+export function freeFishyReport(): string {
+  const lutz = lutzFishyAvailable()
+    ? `available (+${LUTZ_FISHY_TURNS} turns)`
+    : get("skateParkStatus") !== "ice"
+      ? "Skate Park is not Ice Skate Territory"
+      : get("_skateBuff1")
+        ? "already dined today"
+        : "visited this run without gaining Fishy";
+  const pipe = !have($item`fishy pipe`)
+    ? "not owned"
+    : get("_fishyPipeUsed")
+      ? "smoked today"
+      : `available (+${FISHY_PIPE_TURNS} turns)`;
+  return ` free fishy sources: Lutz, the Ice Skate: ${lutz} | fishy pipe: ${pipe}`;
 }
