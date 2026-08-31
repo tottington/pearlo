@@ -586,7 +586,8 @@ export function pearlMood(
       "red",
     );
   }
-  // Fishy: free pipe only in v1 (docs/consumption-reference.md)
+  // Fishy: free pipe only in v1 (docs/consumption-reference.md). Lutz's 30 turns are
+  // taken up front by their own task, before any zone is priced against them.
   if (!have($effect`Fishy`) && have($item`fishy pipe`) && !get("_fishyPipeUsed")) {
     use($item`fishy pipe`);
   }

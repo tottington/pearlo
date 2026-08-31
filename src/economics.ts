@@ -30,7 +30,9 @@ import { familiarBreathesFree, predictedPlayerAirByEffect, resFamiliarSwitches }
 import {
   FISHY_PIPE_TURNS,
   HAGGLING_FISHY_TURNS,
+  LUTZ_FISHY_TURNS,
   luckyRefreshCosts,
+  lutzFishyAvailable,
   refreshNetTurns,
 } from "./fishy";
 import { resItems, uncastResBuffBonus } from "./mood";
@@ -121,10 +123,11 @@ function meatPerHp(): number {
 
 // ---------- progress / turns ----------
 
-/** Fights coverable by Fishy sources already on hand — active turns + unused pipe. */
+/** Fights coverable by free Fishy already on hand — active turns, Lutz, unused pipe. */
 function baseFishyFights(): number {
   return (
     haveEffect($effect`Fishy`) +
+    (lutzFishyAvailable() ? LUTZ_FISHY_TURNS : 0) +
     (have($item`fishy pipe`) && !get("_fishyPipeUsed") ? FISHY_PIPE_TURNS : 0)
   );
 }
