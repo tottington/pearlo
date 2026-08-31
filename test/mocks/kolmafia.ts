@@ -219,6 +219,8 @@ export type GameState = {
   /** What buy() actually delivers; the default fills whenever the cap covers mall price. */
   buyImpl: (item: Item, count: number, limit: number | undefined) => number;
   makeValueThrows: boolean;
+  /** Side effects a CLI command has in the fake game, keyed by the exact command. */
+  cliHandlers: Map<string, () => void>;
   log: {
     buys: BuyCall[];
     uses: UseCall[];
@@ -293,6 +295,7 @@ function freshState(): GameState {
       return count;
     },
     makeValueThrows: false,
+    cliHandlers: new Map(),
     log: {
       buys: [],
       uses: [],
@@ -362,6 +365,7 @@ export function canEquip(item: Item): boolean {
 
 export function cliExecute(command: string): boolean {
   __state.log.cliExecutes.push(command);
+  __state.cliHandlers.get(command)?.();
   return true;
 }
 

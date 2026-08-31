@@ -4,9 +4,11 @@ import { $familiar, $item, $items, $slot, have } from "libram";
 
 import { args, familiarOverride, outfitOverride } from "./args";
 import {
+  DamagePlan,
   damagePlan,
   lanternComponentsNeededForOneShot,
   ownedLanternProspect,
+  plannedLanternComponents,
   selectLanternGear,
 } from "./combat";
 import {
@@ -139,9 +141,16 @@ export function pearlOutfitWeights(overdrunk: boolean, weaponForced: boolean): s
   return `, 0.05 hp regen, 0.05 mp regen${combat}`;
 }
 
+/** Items the real dress refuses. */
+function pearlAvoidItems(spec: PearlSpec): Item[] {
+  return [...GLOBAL_AVOID, ...(spec.avoid ?? [])];
+}
+
 /** Items the real dress refuses, as maximizer terms, so a speculation can refuse them too. */
 export function pearlAvoidTerms(spec: PearlSpec): string {
-  return [...GLOBAL_AVOID, ...(spec.avoid ?? [])].map((i) => `, -"equip ${i}"`).join("");
+  return pearlAvoidItems(spec)
+    .map((i) => `, -"equip ${i}"`)
+    .join("");
 }
 
 /**
@@ -194,6 +203,33 @@ export function pearlForcedEquipment(
     if (have(cape) && canEquip(cape) && !backSlotNeededForAir(airByEffect)) equip.push(cape);
   }
   return { equip, secondLantern };
+}
+
+/**
+ * The slots the run commits under a given air state: the forced gear plus an override
+ * outfit's pieces, less the ones the dress refuses.
+ */
+export function pearlPlannedEquipment(
+  spec: PearlSpec,
+  mode: LiverMode = liverMode(),
+  airByEffect: () => boolean = playerAirByEffect,
+): Item[] {
+  const equip = pearlForcedEquipment(spec, mode, airByEffect).equip;
+  const outfitName = outfitOverride(spec.key);
+  if (outfitName === undefined) return [...equip];
+  const avoid = pearlAvoidItems(spec);
+  return [...equip, ...outfitPieces(outfitName).filter((p) => !avoid.includes(p))];
+}
+
+/**
+ * Damage priced from the gear the run commits, not what is worn when the command runs.
+ * A floor: current air rather than predicted, the familiar's second lantern, and an
+ * override's cape (whose kill mode the dress never sets) are left out.
+ */
+export function pearlDamagePlan(spec: PearlSpec, mode: LiverMode = liverMode()): DamagePlan {
+  const equip = pearlPlannedEquipment(spec, mode, playerAirByEffect);
+  const capeKills = outfitOverride(spec.key) === undefined && capeMode(spec) === "kill";
+  return damagePlan(spec.maxHp, plannedLanternComponents(equip, capeKills));
 }
 
 export function buildPearlOutfit(spec: PearlSpec, familiarMode?: FamiliarMode): OutfitSpec {
@@ -270,7 +306,7 @@ export function buildPearlOutfit(spec: PearlSpec, familiarMode?: FamiliarMode): 
     familiarPlan = pickUtilityFamiliar(secondLantern);
   }
 
-  const avoid = [...GLOBAL_AVOID, ...(spec.avoid ?? [])];
+  const avoid = pearlAvoidItems(spec);
 
   if (outfitName !== undefined) {
     // Saved-outfit override: the user's outfit IS the res plan. Its pieces are forced

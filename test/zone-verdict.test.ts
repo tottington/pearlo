@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 
 import type { PearlSpec } from "../src/zones";
 
-import { Game, loadGame, standardScenario } from "./support/harness";
+import { Game, Tools, loadGame, standardScenario } from "./support/harness";
 
 function spec(g: Game, key: string): PearlSpec {
   const found = g.zones.PEARLS.find((p) => p.key === key);
@@ -560,5 +560,170 @@ describe("the dressed outfit carries the same objective as the model", () => {
     const dressed = (built.equip ?? []).map((i) => `${i}`);
     expect(forced.map((i) => `${i}`)).not.toContain("unwrapped knock-off retro superhero cape");
     expect(dressed).not.toContain("unwrapped knock-off retro superhero cape");
+  });
+});
+
+describe("the fight is priced with the outfit the run will dress", () => {
+  /**
+   * Myst 600 puts raw Saucegeyser at 300 per cast — three casts on an 800 HP monster —
+   * while the Medal's two lantern components lift it to 900 and one cast. The model
+   * forces that Medal into the resistance speculation, so it has to collect the damage
+   * it just paid an accessory slot for.
+   */
+  function lanternScenario(t: Tools): void {
+    standardScenario(t, { res: 18, fishyTurns: 60 });
+    t.state.buffedStats.Mysticality = 600;
+    t.item("Congressional Medal of Insanity", { count: 1 });
+    t.item("Doc Galaktik's Invigorating Tonic", { npc: 100 });
+    t.skill("Saucegeyser", { mp: 20 });
+  }
+
+  it("counts the lantern gear it forces, instead of what happened to be worn", async () => {
+    const g = await loadGame(lanternScenario);
+    const cold = spec(g, "cold");
+    const forced = g.outfit.pearlForcedEquipment(cold, g.organs.liverMode()).equip;
+    expect(forced.map((i) => `${i}`)).toContain("Congressional Medal of Insanity");
+    // 10 fights x 1 cast x 20 MP x 10 meat/MP. Pricing the pre-dress state instead
+    // would bill three casts, and the zone would read 4,000 meat poorer than it runs.
+    expect(g.economics.zoneVerdict(cold).mpCost).toBe(2000);
+  });
+
+  it("counts only the lanterns the outfit forces, not every lantern owned", async () => {
+    // The one-shot needs two components and the Medal alone covers them, so the spare
+    // off-hand gear is never equipped. Pricing the whole owned pile would overstate the
+    // damage of an outfit the run does not dress.
+    const g = await loadGame((t) => {
+      lanternScenario(t);
+      t.item("petrified wood water purifier", { count: 1 });
+      t.item("meteorb", { count: 1 });
+    });
+    // perCast is the discriminating figure: the owned pile reads 1,800, which still
+    // one-shots, so a cast count could not tell the two apart.
+    expect(g.outfit.pearlDamagePlan(spec(g, "cold")).perCast).toBe(900);
+  });
+
+  it("does not credit a cape the current air state has not freed the back slot for", async () => {
+    // Predicted air commits the back slot to the cape, but the dress runs on current
+    // air and owes it to breathing. Charging the slot is right; buying a cast with it
+    // is not, so the damage credit reads current air.
+    const g = await loadGame((t) => {
+      lanternScenario(t);
+      t.item("unwrapped knock-off retro superhero cape", { count: 1 });
+      t.item("ballast turtle", { count: 1 });
+    });
+    const cold = spec(g, "cold");
+    g.economics.zoneVerdict(cold);
+    const capeTerm = "+equip unwrapped knock-off retro superhero cape";
+    expect(
+      g.state.log.maximizes.filter((m) => m.speculate).some((m) => m.modifier.includes(capeTerm)),
+    ).toBe(true);
+    expect(g.outfit.pearlDamagePlan(cold).perCast).toBe(900);
+  });
+
+  it("credits the cape once the air effect is actually up", async () => {
+    const g = await loadGame((t) => {
+      lanternScenario(t);
+      t.item("unwrapped knock-off retro superhero cape", { count: 1 });
+      t.active("Really Deep Breath", 50);
+    });
+    expect(g.outfit.pearlDamagePlan(spec(g, "cold")).perCast).toBe(1200);
+  });
+
+  it("counts an override outfit's own lantern gear", async () => {
+    // pearlForcedEquipment returns early for an override and never selects lanterns, so
+    // the pieces have to be folded in or every override zone prices at zero damage gear.
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 18, fishyTurns: 60 });
+      t.state.buffedStats.Mysticality = 600;
+      const medal = t.item("Congressional Medal of Insanity", { count: 1 });
+      t.state.outfits.set("coldfit", [medal]);
+    });
+    g.args.overrides.coldoutfit = "coldfit";
+    const plan = g.outfit.pearlDamagePlan(spec(g, "cold"));
+    expect(plan.perCast).toBe(900);
+    expect(plan.casts).toBe(1);
+  });
+
+  it("does not credit an override outfit's cape, whose kill mode the dress never sets", async () => {
+    // buildPearlOutfit's override branch sets only the parka mode, so the cape keeps
+    // whatever the account left it on. Crediting a lantern there buys a cast for free.
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 18, fishyTurns: 60 });
+      t.state.buffedStats.Mysticality = 600;
+      const medal = t.item("Congressional Medal of Insanity", { count: 1 });
+      const cape = t.item("unwrapped knock-off retro superhero cape", { count: 1 });
+      t.state.outfits.set("coldfit", [medal, cape]);
+    });
+    g.args.overrides.coldoutfit = "coldfit";
+    expect(g.outfit.pearlDamagePlan(spec(g, "cold")).perCast).toBe(900);
+  });
+
+  it("drops override pieces the dress refuses before pricing them", async () => {
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 18, fishyTurns: 60 });
+      const medal = t.item("Congressional Medal of Insanity", { count: 1 });
+      const bottle = t.item("broken champagne bottle", { count: 1 });
+      t.state.outfits.set("coldfit", [medal, bottle]);
+    });
+    g.args.overrides.coldoutfit = "coldfit";
+    const planned = g.outfit
+      .pearlPlannedEquipment(spec(g, "cold"), g.organs.liverMode())
+      .map((i) => `${i}`);
+    expect(planned).toContain("Congressional Medal of Insanity");
+    expect(planned).not.toContain("broken champagne bottle");
+  });
+
+  it("does not credit the cape when the plan puts it in hold mode", async () => {
+    // Myst 100 leaves the cape's own build at four casts, so capeMode picks hold — the
+    // stun, not the lantern. Only the kill mode duplicates the spell.
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 18, fishyTurns: 60 });
+      t.state.buffedStats.Mysticality = 100;
+      t.item("unwrapped knock-off retro superhero cape", { count: 1 });
+      t.active("Really Deep Breath", 50);
+    });
+    expect(g.outfit.pearlDamagePlan(spec(g, "cold")).perCast).toBe(100);
+  });
+
+  it("prices each zone against its own monster HP", async () => {
+    // 380 a cast splits the 750 HP zones from the 800 HP ones: two casts against
+    // Anemone Mine, three against The Briniest Deepests.
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 18, fishyTurns: 60 });
+      t.state.buffedStats.Mysticality = 800;
+    });
+    expect(g.outfit.pearlDamagePlan(spec(g, "spooky")).casts).toBe(2);
+    expect(g.outfit.pearlDamagePlan(spec(g, "cold")).casts).toBe(3);
+  });
+
+  it("does not credit lantern gear the organ extenders crowd out", async () => {
+    // Required extenders take their slots first, so a Medal with nowhere to sit is not
+    // damage — and the resistance charge already assumes those slots are spoken for.
+    const g = await loadGame((t) => {
+      lanternScenario(t);
+      t.state.fullness = 17; // limit 15, so both stomach extenders are required
+      t.state.spleenUse = 16; // and one spleen extender
+      for (const name of ["angelbone chopsticks", "devilbone corset", "angelbone totem"]) {
+        t.state.itemSlots.set(t.item(name, { count: 1 }), t.mocks.Slot.get("acc1"));
+      }
+    });
+    expect(g.outfit.pearlDamagePlan(spec(g, "cold")).perCast).toBe(300);
+  });
+
+  it("does not credit lantern gear it cannot equip", async () => {
+    const g = await loadGame((t) => {
+      standardScenario(t, { res: 18, fishyTurns: 60 });
+      t.state.buffedStats.Mysticality = 600;
+      t.item("Congressional Medal of Insanity", { count: 1, canEquip: false });
+    });
+    expect(g.outfit.pearlDamagePlan(spec(g, "cold")).perCast).toBe(300);
+  });
+
+  it("prices the liver mode it is asked about", async () => {
+    // Overdrunk skips lantern gear entirely: the wineglass kills spells.
+    const g = await loadGame(lanternScenario);
+    const cold = spec(g, "cold");
+    expect(g.outfit.pearlDamagePlan(cold, "sober").perCast).toBe(900);
+    expect(g.outfit.pearlDamagePlan(cold, "wineglass").perCast).toBe(300);
   });
 });

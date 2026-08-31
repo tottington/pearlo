@@ -42,9 +42,15 @@ import {
   weaponAttackPlan,
   wineglassAccessible,
 } from "./combat";
-import { resStepWorthIt, turnsForFights, zoneVerdict } from "./economics";
+import { primeZoneVerdicts, resStepWorthIt, turnsForFights, zoneVerdict } from "./economics";
 import { pickUtilityFamiliar, playerAirByEffect, resFamiliarSwitches } from "./familiar";
-import { acquireLucky, luckySourceAvailable, remainingPearlFights } from "./fishy";
+import {
+  acquireLucky,
+  luckySourceAvailable,
+  lutzFishyAvailable,
+  remainingPearlFights,
+  visitLutz,
+} from "./fishy";
 import { abortIfBeatenUp, asdonFualable, fuelUp, handlePostCombatBeatenUp } from "./lib";
 import { WorthIt, castFreeResBuffs, pearlMood, topUpFamiliarWeight, topUpRes } from "./mood";
 import { wineglassMode } from "./organs";
@@ -226,6 +232,25 @@ function breatheUnderwaterTask(selected: PearlSpec[]): Task {
 }
 
 /**
+ * Lutz's free 30 turns of Fishy, taken before any zone is farmed. The budget counts the
+ * visit while it is still only on offer, so whichever way it goes the zones priced
+ * against it are re-priced here, while that verdict can still change what runs.
+ */
+function lutzTask(selected: PearlSpec[]): Task {
+  return {
+    name: "Lutz Fishy",
+    after: ["Breathe Underwater"],
+    // visitLutz spends its one attempt whatever happens, so this always settles.
+    completed: () => !lutzFishyAvailable(),
+    do: () => {
+      visitLutz();
+      primeZoneVerdicts(selected);
+    },
+    limit: { tries: 2 },
+  };
+}
+
+/**
  * Fishy refresh (docs/superpowers/specs/2026-08-08-lucky-fishy-design.md): when Fishy
  * is down to ≤1 turn, acquire Lucky! and adventure in The Brinier Deepers — its lucky
  * NC "The Haggling" grants 20 turns of Fishy. Placed before the zone tasks: list
@@ -243,8 +268,9 @@ function getFishyTask(selected: PearlSpec[]): Task {
     ready: () =>
       args.resources.luckyfishy &&
       canBreathUnderwater() &&
-      // The free fishy pipe is strictly cheaper (no turn, no Lucky!) — let
-      // pearlMood spend it first; this task covers the post-pipe day.
+      // The free sources — Lutz and the fishy pipe — are strictly cheaper (no turn, no
+      // Lucky!), so let pearlMood spend them first; this task covers the day after.
+      !lutzFishyAvailable() &&
       !(have($item`fishy pipe`) && !get("_fishyPipeUsed")) &&
       remainingPearlFights(selected) > 0 &&
       (have($effect`Lucky!`) || luckySourceAvailable(remainingPearlFights(selected))) &&
@@ -507,6 +533,7 @@ const prepCodpieceTask: Task = {
 export function pearlTasks(selected: PearlSpec[]): Task[] {
   return [
     breatheUnderwaterTask(selected),
+    lutzTask(selected),
     getFishyTask(selected),
     ...selected.map(pearlTask),
     prepCodpieceTask,
