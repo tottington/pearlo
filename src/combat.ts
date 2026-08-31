@@ -60,18 +60,31 @@ export function equippedLanternComponents(): number {
   return n;
 }
 
-/** Upper bound on lantern components if we equip everything we own (planning pass). */
 /** Owned and wearable: the one-shot requirement and the selection must agree. */
 function usableLantern(item: Item): boolean {
   return have(item) && canEquip(item);
 }
 
+/** Upper bound on lantern components if we equip everything we own (planning pass). */
 export function ownedLanternProspect(): number {
   let n = 0;
   for (const gear of LANTERN_GEAR) {
     if (usableLantern(gear.item)) n += gear.components;
   }
   if (have($item`unwrapped knock-off retro superhero cape`)) n += 1;
+  return n;
+}
+
+/**
+ * Lantern components a planned equipment list carries. A floor: the familiar's second
+ * lantern is left out, and the cape counts only when its kill mode is known to be set.
+ */
+export function plannedLanternComponents(equip: Item[], capeKills: boolean): number {
+  let n = 0;
+  for (const gear of LANTERN_GEAR) {
+    if (equip.includes(gear.item)) n += gear.components;
+  }
+  if (capeKills && equip.includes($item`unwrapped knock-off retro superhero cape`)) n += 1;
   return n;
 }
 

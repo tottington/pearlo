@@ -47,8 +47,9 @@ import {
 } from "./organs";
 import {
   pearlAvoidTerms,
-  pearlForcedEquipment,
+  pearlDamagePlan,
   pearlOutfitWeights,
+  pearlPlannedEquipment,
   pearlResObjective,
 } from "./outfit";
 import {
@@ -644,10 +645,8 @@ function evaluateZone(spec: PearlSpec, mode: LiverMode, budget: FishyBudget): Zo
   // Speculating with any of them free reports resistance the run cannot reach.
   // Predicted air, not current: this prices before the breathing task runs, and whether
   // the back slot goes to the cape or to a SCUBA tank follows from it.
-  const equips = pearlForcedEquipment(spec, mode, predictedPlayerAirByEffect).equip;
+  const equips = pearlPlannedEquipment(spec, mode, predictedPlayerAirByEffect);
   const outfitName = outfitOverride(spec.key);
-  const overridePieces = outfitName !== undefined ? outfitPieces(outfitName) : [];
-  equips.push(...overridePieces);
   const familiar = mode === "stooper" ? $familiar`Stooper` : familiarOverride(spec.key);
 
   // speculativeResFloor lets the maximizer fill outfit-free slots with res gear and
@@ -659,7 +658,7 @@ function evaluateZone(spec: PearlSpec, mode: LiverMode, budget: FishyBudget): Zo
       ? overrideResEstimate(spec, equips)
       : speculativeResFloor(spec, equips, mode, familiar);
   const remainingPct = 100 - get(spec.progress, 0);
-  const damage = damagePlan(spec.maxHp);
+  const damage = pearlDamagePlan(spec, mode);
   // Wineglass fights are one-shot-or-abort (pearls.ts prepare guard), so 1 cast.
   const casts = wineglass ? 1 : damage.casts;
   // The devilbone corset (stomach extender) occupies the shirt slot, displacing the
