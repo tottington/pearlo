@@ -80,20 +80,19 @@ describe("the Lucky! notice", () => {
 
   it("warns again once Lucky! has lapsed and come back, even from another zone", async () => {
     // Get Fishy spends Lucky! in The Brinier Deepers, which is no pearl zone and never
-    // reaches here, so the lapse has to clear every zone's notice and not just this one.
+    // reaches here, so the lapse is seen from a zone with no Lucky noncombat of its own.
     const g = await luckyGame();
     runMood(g, spec(g, "sleaze"));
     g.state.effects.delete(g.mocks.Effect.get("Lucky!"));
-    runMood(g, spec(g, "stench"));
+    runMood(g, spec(g, "spooky"));
     g.state.effects.set(g.mocks.Effect.get("Lucky!"), 1);
     runMood(g, spec(g, "sleaze"));
     expect(notices(g)).toHaveLength(2);
   });
 
-  it("defers to the Fishy refresh only when that refresh will spend the effect", async () => {
-    // luckyfishy on and Fishy nearly gone means Get Fishy preempts this zone and spends
-    // Lucky! in The Brinier Deepers, so there is nothing to warn about. Either the
-    // refresh is off or Fishy has turns left, and the hazard is live again.
+  it("defers to the Fishy refresh, which may spend the effect first", async () => {
+    // luckyfishy on and Fishy nearly gone means Get Fishy may preempt this zone and spend
+    // Lucky! there instead. Either the refresh is off or Fishy has turns left, and it is live.
     const nearlyOut = await loadGame((t) => {
       standardScenario(t, { res: 18, fishyTurns: 1 });
       t.active("Lucky!", 1);
