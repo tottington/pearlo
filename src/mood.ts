@@ -579,8 +579,8 @@ export function pearlMood(
   turnsFor: TurnsFor,
 ): void {
   // Lucky! is spent on the zone's Lucky noncombat instead of a pearl fight, so only a zone
-  // that has one is worth flagging. The Fishy clause defers to Get Fishy, which spends the
-  // effect in The Brinier Deepers before we get here. Said once per zone while it is up.
+  // that has one is worth flagging. The Fishy clause defers to Get Fishy, which may spend it
+  // first but stands down while a free Fishy source is unused. Said once per zone.
   if (!have($effect`Lucky!`)) {
     luckyNoticePrinted.clear();
   } else if (
