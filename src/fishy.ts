@@ -61,8 +61,11 @@ export function lutzFishyAvailable(): boolean {
 }
 
 /**
- * Take Lutz's free Fishy. The request equips its own breathing gear, so this needs no
- * outfit. Reports whether Fishy is up afterward.
+ * Take Lutz's free Fishy. Water breathing must already be up: mafia's SkateParkRequest
+ * only self-equips a short fixed list of gear (aerated diving helmet, Mer-kin masks,
+ * SCUBA gear, old SCUBA tank) and errors out otherwise, so the caller dresses for the
+ * visit (lutzTask's outfit) and this only refuses when that still left air down.
+ * Reports whether Fishy is up afterward.
  */
 export function visitLutz(): boolean {
   if (!lutzFishyAvailable()) return false;
