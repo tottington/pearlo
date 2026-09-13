@@ -200,7 +200,7 @@ describe("the Lutz task", () => {
     expect(g.economics.turnsForFights(40)).toBe(30 + 10 * 2);
   });
 
-  it("does not visit without water breathing, and drops the source", async () => {
+  it("spends the attempt without visiting when the dress still left breathing down", async () => {
     const g = await loadGame((t) => {
       standardScenario(t, { res: 18 });
       iceTerritory(t);
@@ -307,4 +307,52 @@ describe("freeFishyReport", () => {
       "Lutz, the Ice Skate: visited this run without gaining Fishy",
     );
   });
+});
+
+describe("the Lutz task dresses for the visit (issue #11)", () => {
+  /** The gear-air day from the issue's log: breathing gear owned, none of it worn yet. */
+  function gearAirDay(t: Tools): void {
+    standardScenario(t, { res: 18 });
+    iceTerritory(t);
+    t.item("aerated diving helmet", { count: 1 });
+    t.prop("_subAquaEquipBreathing", true);
+    lutzWorks(t);
+  }
+
+  function outfitOf(task: { outfit?: unknown }): Record<string, unknown> {
+    if (typeof task.outfit !== "function") throw new Error("expected an outfit() function");
+    return (task.outfit as () => Record<string, unknown>)();
+  }
+
+  it("asks the maximizer for water breathing when no air effect is up", async () => {
+    const g = await loadGame(gearAirDay);
+    const spec = outfitOf(lutzTask(g, [spec_(g)]));
+    expect(spec.modifier).toBe("adventure underwater");
+  });
+
+  it("asks for no breathing gear when an air effect already covers it", async () => {
+    const g = await loadGame((t) => {
+      gearAirDay(t);
+      t.active("Driving Waterproofly", 30);
+    });
+    const spec = outfitOf(lutzTask(g, [spec_(g)]));
+    expect(spec.modifier).toBeUndefined();
+  });
+
+  it("takes the Fishy once the dress has put breathing up", async () => {
+    const g = await loadGame(gearAirDay);
+    const task = lutzTask(g, [spec_(g)]);
+    expect(task.completed()).toBe(false);
+    // The engine dresses the task's outfit before do(); the fake maximizer does not
+    // model gear, so stand in for it: the requested breathing build is now worn.
+    expect(outfitOf(task).modifier).toBe("adventure underwater");
+    g.state.playerMods["Adventure Underwater"] = true;
+    runTask(task);
+    expect(skated(g)).toBe(true);
+    expect(g.economics.turnsForFights(40)).toBe(30 + 10 * 2);
+  });
+
+  function spec_(g: Game): PearlSpec {
+    return spec(g, "cold");
+  }
 });

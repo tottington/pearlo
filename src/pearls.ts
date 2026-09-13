@@ -235,6 +235,11 @@ function breatheUnderwaterTask(selected: PearlSpec[]): Task {
  * Lutz's free 30 turns of Fishy, taken before any zone is farmed. The budget counts the
  * visit while it is still only on offer, so whichever way it goes the zones priced
  * against it are re-priced here, while that verdict can still change what runs.
+ *
+ * The visit needs water breathing up NOW, not merely obtainable: on a gear-air day
+ * Breathe Underwater only flags that the zone outfits will wear the gear, and nothing
+ * is worn yet when this task runs. Dress for it the way the Get Fishy trip does, or
+ * the one attempt is spent on a skip and the day's cheapest Fishy is lost (issue #11).
  */
 function lutzTask(selected: PearlSpec[]): Task {
   return {
@@ -242,6 +247,16 @@ function lutzTask(selected: PearlSpec[]): Task {
     after: ["Breathe Underwater"],
     // visitLutz spends its one attempt whatever happens, so this always settles.
     completed: () => !lutzFishyAvailable(),
+    outfit: (): OutfitSpec => {
+      // Page visit, no combat: only breathing matters. Same recipe as Get Fishy — a
+      // familiar that can breathe (or none), and player air from the maximizer unless
+      // an effect already supplies it.
+      const plan = pickUtilityFamiliar();
+      const spec: OutfitSpec = { familiar: plan.familiar ?? $familiar.none };
+      if (plan.famequip !== undefined) spec.famequip = plan.famequip;
+      if (!playerAirByEffect()) spec.modifier = "adventure underwater";
+      return spec;
+    },
     do: () => {
       visitLutz();
       primeZoneVerdicts(selected);
