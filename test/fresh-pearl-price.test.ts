@@ -81,6 +81,17 @@ describe("the pearl's value", () => {
     expect(g.state.log.prints.some((p) => p.includes("found no price"))).toBe(true);
   });
 
+  it("warns when the search finds no listing, which mafia records as -1", async () => {
+    const g = await loadGame((t) => {
+      stalePrice(t);
+      t.state.mallSearchHandlers.set(t.item("unblemished pearl"), () => {
+        t.item("unblemished pearl", { mall: -1 });
+      });
+    });
+    g.economics.pearlValue();
+    expect(g.state.log.prints.some((p) => p.includes("found no price"))).toBe(true);
+  });
+
   it("stays quiet when the search prices the pearl", async () => {
     const g = await loadGame((t) => {
       stalePrice(t);

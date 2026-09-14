@@ -87,7 +87,7 @@ export function pearlValue(): number {
   if (pearlValueCache === undefined) {
     // mallPrice answers from mafia's rollover-day cache. A max age of 0 searches the mall.
     if (mallPrice($item`unblemished pearl`, 0) <= 0) {
-      print("pearlo: the mall search found no price for unblemished pearl", "red");
+      print("pearlo: the first mall search found no price for unblemished pearl", "red");
     }
     pearlValueCache = garboValue($item`unblemished pearl`);
   }
