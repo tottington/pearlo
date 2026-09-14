@@ -229,7 +229,7 @@ export type GameState = {
     buys: BuyCall[];
     uses: UseCall[];
     cliExecutes: string[];
-    mallSearches: Item[];
+    mallSearches: { item: Item; maxAge: number }[];
     skillsCast: Skill[];
     hpRestores: number[];
     mpRestores: number[];
@@ -471,7 +471,7 @@ export function itemAmount(item: Item): number {
 
 export function mallPrice(item: Item, maxAge?: number): number {
   if (maxAge !== undefined && (__state.mallPriceAges.get(item) ?? Infinity) > maxAge) {
-    __state.log.mallSearches.push(item);
+    __state.log.mallSearches.push({ item, maxAge });
     __state.mallSearchHandlers.get(item)?.();
   }
   return __state.mallPrices.get(item) ?? 0;
