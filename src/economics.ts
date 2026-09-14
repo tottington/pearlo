@@ -84,7 +84,11 @@ export function garboValue(item: Item): number {
 let pearlValueCache: number | undefined;
 
 export function pearlValue(): number {
-  pearlValueCache ??= garboValue($item`unblemished pearl`);
+  if (pearlValueCache === undefined) {
+    // mallPrice answers from mafia's rollover-day cache. A max age of 0 searches the mall.
+    mallPrice($item`unblemished pearl`, 0);
+    pearlValueCache = garboValue($item`unblemished pearl`);
+  }
   return pearlValueCache;
 }
 
